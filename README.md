@@ -5,7 +5,7 @@ Lightweight Unity net sync oriented around **Steam + Distributed Authority**:
 - Explicit typed messages (no RPC / NetworkVariable / NetworkBehaviour)
 - Host as relay + ClientId assignment; owners push entity state
 - Industry-standard type names (`NetworkManager`, `NetworkObject`, …) in `Xoderony.Networking`
-- `NetworkTransport` with in-process `LoopbackTransport` and a Steam stub
+- `NetworkTransport` with in-process `LoopbackTransport` (the Steam transport lives in the game project)
 
 ## Install
 
@@ -60,7 +60,7 @@ Application messages: register on `networkManager.CustomMessaging` with types `>
 | Namespace | Types |
 |-----------|--------|
 | `Xoderony.Networking` | `NetworkManager`, `NetworkObject`, `NetworkSpawnManager`, `BufferWriter`, `BufferReader` |
-| `Xoderony.Networking.Transport` | `NetworkTransport`, `LoopbackTransport`, `SteamNetworkTransport`, `NetworkDelivery` |
+| `Xoderony.Networking.Transport` | `NetworkTransport`, `LoopbackTransport`, `NetworkDelivery` |
 | `Xoderony.Networking.Messaging` | `CustomMessagingManager`, `NetworkMessageType` |
 
 ## Samples
@@ -69,7 +69,9 @@ Application messages: register on `networkManager.CustomMessaging` with types `>
 
 ## Steam
 
-`SteamNetworkTransport` is intentionally unwired so this package stays free of a Steamworks dependency. Implement `NetworkTransport` against SteamNetworkingSockets in a game/Steam-specific assembly.
+This package ships no Steam transport so it stays free of a Steamworks dependency. The game project
+implements `JoG.Networking.SteamNetworkTransport` on top of Facepunch.Steamworks (SteamNetworkingSockets)
+as a consumer-side reference.
 
 ## Status
 

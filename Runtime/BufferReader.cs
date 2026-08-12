@@ -1,148 +1,110 @@
 using System;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
-using System.Text;
 
-namespace Xoderony.Networking
-{
-    public sealed class BufferReader
-    {
-        private byte[] _buffer;
-        private int _length;
-        private int _position;
+namespace Xoderony.Networking {
+    public ref struct BufferReader {
+        public ReadOnlySpan<byte> Buffer;
+        public int Position;
 
-        public int Length => _length;
-        public int Remaining => _length - _position;
+        public readonly int Remaining => Buffer.Length - Position;
 
-        public int Position
-        {
-            get => _position;
-            set => _position = value;
+        public BufferReader(ReadOnlySpan<byte> buffer) {
+            Buffer = buffer;
+            Position = 0;
         }
 
-        public BufferReader(int capacity = 256)
-        {
-            _buffer = new byte[capacity];
+        /// <summary>
+        /// 剩余检查：还能再读 count 字节；读取前调用一次，之后可连续 Read* 而不逐次比较。
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public readonly bool CanRead(int count) {
+            return Position + count <= Buffer.Length;
         }
 
-        public void Clear()
-        {
-            _length = 0;
-            _position = 0;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public byte ReadByte() {
+            return Buffer[Position++];
         }
 
-        public void Load(ArraySegment<byte> data)
-        {
-            Clear();
-            EnsureCapacity(data.Count);
-            if (data.Count > 0)
-            {
-                Buffer.BlockCopy(data.Array!, data.Offset, _buffer, 0, data.Count);
-            }
-
-            _length = data.Count;
-            _position = 0;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public sbyte ReadSByte() {
+            return (sbyte)Buffer[Position++];
         }
 
-        public byte ReadByte()
-        {
-            EnsureRead(1);
-            return _buffer[_position++];
+        // 非 0 视为 true。
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool ReadBool() {
+            return Buffer[Position++] != 0;
         }
 
-        public ushort ReadUShort()
-        {
-            EnsureRead(2);
-            var value = BinaryPrimitives.ReadUInt16LittleEndian(_buffer.AsSpan(_position));
-            _position += 2;
-            return value;
-        }
-
-        public int ReadInt()
-        {
-            EnsureRead(4);
-            var value = BinaryPrimitives.ReadInt32LittleEndian(_buffer.AsSpan(_position));
-            _position += 4;
-            return value;
-        }
-
-        public uint ReadUInt()
-        {
-            EnsureRead(4);
-            var value = BinaryPrimitives.ReadUInt32LittleEndian(_buffer.AsSpan(_position));
-            _position += 4;
-            return value;
-        }
-
-        public ulong ReadULong()
-        {
-            EnsureRead(8);
-            var value = BinaryPrimitives.ReadUInt64LittleEndian(_buffer.AsSpan(_position));
-            _position += 8;
-            return value;
-        }
-
-        public float ReadFloat()
-        {
-            EnsureRead(4);
-            var value = BinaryPrimitives.ReadSingleLittleEndian(_buffer.AsSpan(_position));
-            _position += 4;
-            return value;
-        }
-
-        public void ReadBytes(Span<byte> destination)
-        {
-            EnsureRead(destination.Length);
-            _buffer.AsSpan(_position, destination.Length).CopyTo(destination);
-            _position += destination.Length;
-        }
-
-        public ArraySegment<byte> ReadByteSegment(int length)
-        {
-            EnsureRead(length);
-            var segment = new ArraySegment<byte>(_buffer, _position, length);
-            _position += length;
-            return segment;
-        }
-
-        public string ReadString()
-        {
-            var byteCount = ReadUShort();
-            if (byteCount == 0)
-            {
-                return string.Empty;
-            }
-
-            EnsureRead(byteCount);
-            var value = Encoding.UTF8.GetString(_buffer, _position, byteCount);
-            _position += byteCount;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ushort ReadUShort() {
+            var value = BinaryPrimitives.ReadUInt16LittleEndian(Buffer[Position..]);
+            Position += 2;
             return value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void EnsureCapacity(int count)
-        {
-            if (count <= _buffer.Length)
-            {
-                return;
-            }
-
-            var size = _buffer.Length;
-            while (size < count)
-            {
-                size *= 2;
-            }
-
-            Array.Resize(ref _buffer, size);
+        public short ReadShort() {
+            var value = BinaryPrimitives.ReadUInt16LittleEndian(Buffer[Position..]);
+            Position += 2;
+            return (short)value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void EnsureRead(int count)
-        {
-            if (_position + count > _length)
-            {
-                throw new InvalidOperationException("BufferReader underrun.");
-            }
+        public char ReadChar() {
+            var value = BinaryPrimitives.ReadUInt16LittleEndian(Buffer[Position..]);
+            Position += 2;
+            return (char)value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int ReadInt() {
+            var value = BinaryPrimitives.ReadInt32LittleEndian(Buffer[Position..]);
+            Position += 4;
+            return value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public uint ReadUInt() {
+            var value = BinaryPrimitives.ReadUInt32LittleEndian(Buffer[Position..]);
+            Position += 4;
+            return value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ulong ReadULong() {
+            var value = BinaryPrimitives.ReadUInt64LittleEndian(Buffer[Position..]);
+            Position += 8;
+            return value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public long ReadLong() {
+            var value = BinaryPrimitives.ReadUInt64LittleEndian(Buffer[Position..]);
+            Position += 8;
+            return (long)value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float ReadFloat() {
+            var bits = BinaryPrimitives.ReadUInt32LittleEndian(Buffer[Position..]);
+            Position += 4;
+            return new UIntFloat { UInt = bits }.Float;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public double ReadDouble() {
+            var value = BinaryPrimitives.ReadUInt64LittleEndian(Buffer[Position..]);
+            Position += 8;
+            return new ULongDouble { ULong = value }.Double;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ReadBytes(Span<byte> destination) {
+            Buffer.Slice(Position, destination.Length).CopyTo(destination);
+            Position += destination.Length;
         }
     }
 }
