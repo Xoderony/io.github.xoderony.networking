@@ -1,0 +1,22 @@
+{
+  "name": "io.github.xoderony.networking",
+  "version": "0.1.0",
+  "displayName": "Xoderony Networking",
+  "description": "Lightweight Steam-oriented net sync: Distributed Authority, explicit messages, no RPC/NV.",
+  "unity": "6000.0",
+  "keywords": [
+    "networking",
+    "multiplayer",
+    "steam"
+  ],
+  "author": {
+    "name": "Xoderony"
+  },
+  "samples": [
+    {
+      "displayName": "Loopback Demo",
+      "description": "Two in-process peers over LoopbackNetTransport: host, client, spawn, owner state.",
+      "path": "Samples~/LoopbackDemo"
+    }
+  ]
+}

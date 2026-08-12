@@ -1,0 +1,16 @@
+{
+  "name": "Xoderony.Networking.LoopbackDemo",
+  "rootNamespace": "Xoderony.Networking.Samples.LoopbackDemo",
+  "references": [
+    "Xoderony.Networking"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
