@@ -1,5 +1,7 @@
 using System;
 using UnityEngine;
+using Xoderony.Networking.Messaging;
+using Xoderony.Networking.Transport;
 
 namespace Xoderony.Networking
 {
@@ -7,22 +9,23 @@ namespace Xoderony.Networking
     /// Network identity on a GameObject. Owner may push <see cref="SendState"/>.
     /// </summary>
     [DisallowMultipleComponent]
-    public class NetworkEntity : MonoBehaviour
+    public class NetworkObject : MonoBehaviour
     {
-        private NetSession _session;
+        private NetworkManager _networkManager;
+        private readonly BufferWriter _stateEnvelope = new BufferWriter(64);
 
-        public uint NetworkId { get; internal set; }
+        public uint NetworkObjectId { get; internal set; }
         public ulong OwnerClientId { get; internal set; }
         public bool IsSpawned { get; internal set; }
         public ushort PrefabId { get; internal set; }
 
-        public NetSession Session => _session;
-        public bool IsOwner => IsSpawned && _session != null && _session.LocalClientId == OwnerClientId;
+        public NetworkManager NetworkManager => _networkManager;
+        public bool IsOwner => IsSpawned && _networkManager != null && _networkManager.LocalClientId == OwnerClientId;
 
-        internal void Bind(NetSession session, uint networkId, ulong ownerClientId, ushort prefabId)
+        internal void Bind(NetworkManager networkManager, uint networkObjectId, ulong ownerClientId, ushort prefabId)
         {
-            _session = session;
-            NetworkId = networkId;
+            _networkManager = networkManager;
+            NetworkObjectId = networkObjectId;
             OwnerClientId = ownerClientId;
             PrefabId = prefabId;
             IsSpawned = true;
@@ -38,8 +41,8 @@ namespace Xoderony.Networking
 
             OnNetworkDespawn();
             IsSpawned = false;
-            _session = null;
-            NetworkId = 0;
+            _networkManager = null;
+            NetworkObjectId = 0;
         }
 
         internal void ReceiveState(ArraySegment<byte> payload)
@@ -47,17 +50,17 @@ namespace Xoderony.Networking
             OnNetworkState(payload);
         }
 
-        public void SendState(NetBuffer payload, NetDelivery delivery = NetDelivery.Reliable)
+        public void SendState(BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable)
         {
             if (!IsOwner)
             {
                 throw new InvalidOperationException("Only the owner can send entity state.");
             }
 
-            var envelope = new NetBuffer(payload.Length + 8);
-            envelope.WriteUInt(NetworkId);
-            envelope.WriteBytes(payload.AsSegment());
-            _session.Bus.SendToOthers(NetMessageType.EntityState, envelope, delivery);
+            _stateEnvelope.Clear();
+            _stateEnvelope.WriteUInt(NetworkObjectId);
+            _stateEnvelope.WriteBytes(payload.AsSegment());
+            _networkManager.CustomMessaging.SendToOthers(NetworkMessageType.EntityState, _stateEnvelope, delivery);
         }
 
         protected virtual void OnNetworkSpawn()

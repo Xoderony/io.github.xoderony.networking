@@ -1,13 +1,13 @@
 using System;
 using System.Collections.Generic;
 
-namespace Xoderony.Networking
+namespace Xoderony.Networking.Transport
 {
     /// <summary>
-    /// In-process transport for two (or more) <see cref="NetSession"/> instances sharing a room name.
-    /// Encode room name with <see cref="RoomAddress"/> for <see cref="INetTransport.StartClient"/>.
+    /// In-process transport for two (or more) <see cref="T:Xoderony.Networking.NetworkManager"/> instances sharing a room name.
+    /// Encode room name with <see cref="RoomAddress"/> for <see cref="NetworkTransport.StartClient"/>.
     /// </summary>
-    public sealed class LoopbackNetTransport : INetTransport
+    public sealed class LoopbackTransport : NetworkTransport
     {
         private static readonly Dictionary<string, Room> Rooms = new Dictionary<string, Room>();
         private static ulong s_nextTransportId = 1;
@@ -15,19 +15,21 @@ namespace Xoderony.Networking
         private readonly string _roomName;
         private Room _room;
         private bool _running;
+        private bool _isHost;
+        private ulong _localTransportId;
 
-        public LoopbackNetTransport(string roomName = "default")
+        public LoopbackTransport(string roomName = "default")
         {
             _roomName = string.IsNullOrEmpty(roomName) ? "default" : roomName;
         }
 
-        public bool IsRunning => _running;
-        public bool IsHost { get; private set; }
-        public ulong LocalTransportId { get; private set; }
+        public override bool IsRunning => _running;
+        public override bool IsHost => _isHost;
+        public override ulong LocalTransportId => _localTransportId;
 
-        public event Action<ulong> PeerConnected;
-        public event Action<ulong> PeerDisconnected;
-        public event Action<ulong, ArraySegment<byte>, NetDelivery> DataReceived;
+        public override event Action<ulong> PeerConnected;
+        public override event Action<ulong> PeerDisconnected;
+        public override event Action<ulong, ArraySegment<byte>, NetworkDelivery> DataReceived;
 
         public static ulong RoomAddress(string roomName)
         {
@@ -35,7 +37,7 @@ namespace Xoderony.Networking
             return (ulong)(uint)roomName.GetHashCode();
         }
 
-        public void StartHost()
+        public override void StartHost()
         {
             if (_running)
             {
@@ -49,8 +51,8 @@ namespace Xoderony.Networking
                     throw new InvalidOperationException($"Loopback room '{_roomName}' already has a host.");
                 }
 
-                LocalTransportId = s_nextTransportId++;
-                IsHost = true;
+                _localTransportId = s_nextTransportId++;
+                _isHost = true;
                 _room = new Room(_roomName, this);
                 Rooms[_roomName] = _room;
             }
@@ -58,7 +60,7 @@ namespace Xoderony.Networking
             _running = true;
         }
 
-        public void StartClient(ulong remoteAddress)
+        public override void StartClient(ulong remoteAddress)
         {
             if (_running)
             {
@@ -73,19 +75,18 @@ namespace Xoderony.Networking
                         $"Loopback room '{_roomName}' has no host. Call StartHost on another transport first.");
                 }
 
-                LocalTransportId = s_nextTransportId++;
-                IsHost = false;
+                _localTransportId = s_nextTransportId++;
+                _isHost = false;
                 _room.AddClient(this);
             }
 
             _running = true;
-            // Notify both sides after leaving the lock.
             var hostId = _room.Host.LocalTransportId;
             PeerConnected?.Invoke(hostId);
-            _room.Host.PeerConnected?.Invoke(LocalTransportId);
+            _room.Host.PeerConnected?.Invoke(_localTransportId);
         }
 
-        public void Disconnect()
+        public override void Disconnect()
         {
             if (!_running)
             {
@@ -103,7 +104,7 @@ namespace Xoderony.Networking
                     return;
                 }
 
-                if (IsHost)
+                if (_isHost)
                 {
                     Rooms.Remove(_roomName);
                 }
@@ -113,23 +114,23 @@ namespace Xoderony.Networking
                 }
             }
 
-            if (IsHost)
+            if (_isHost)
             {
                 foreach (var client in room.ClientsSnapshot())
                 {
                     client._running = false;
-                    client.PeerDisconnected?.Invoke(LocalTransportId);
+                    client.PeerDisconnected?.Invoke(_localTransportId);
                 }
             }
             else
             {
-                room.Host.PeerDisconnected?.Invoke(LocalTransportId);
+                room.Host.PeerDisconnected?.Invoke(_localTransportId);
             }
 
-            IsHost = false;
+            _isHost = false;
         }
 
-        public void Send(ulong transportPeerId, ArraySegment<byte> data, NetDelivery delivery)
+        public override void Send(ulong transportPeerId, ArraySegment<byte> data, NetworkDelivery delivery)
         {
             if (!_running || _room == null)
             {
@@ -146,45 +147,34 @@ namespace Xoderony.Networking
                 return;
             }
 
-            target.DataReceived?.Invoke(LocalTransportId, segment, delivery);
+            target.DataReceived?.Invoke(_localTransportId, segment, delivery);
         }
 
-        public void Poll()
+        public override void Poll()
         {
             // Loopback delivers synchronously in Send.
         }
 
-        public void Dispose() => Disconnect();
-
         private sealed class Room
         {
-            private readonly List<LoopbackNetTransport> _clients = new List<LoopbackNetTransport>();
+            private readonly List<LoopbackTransport> _clients = new List<LoopbackTransport>();
 
-            public Room(string name, LoopbackNetTransport host)
+            public Room(string name, LoopbackTransport host)
             {
                 Name = name;
                 Host = host;
             }
 
             public string Name { get; }
-            public LoopbackNetTransport Host { get; }
+            public LoopbackTransport Host { get; }
 
-            public void AddClient(LoopbackNetTransport client)
-            {
-                _clients.Add(client);
-            }
+            public void AddClient(LoopbackTransport client) => _clients.Add(client);
 
-            public void RemoveClient(LoopbackNetTransport client)
-            {
-                _clients.Remove(client);
-            }
+            public void RemoveClient(LoopbackTransport client) => _clients.Remove(client);
 
-            public List<LoopbackNetTransport> ClientsSnapshot()
-            {
-                return new List<LoopbackNetTransport>(_clients);
-            }
+            public List<LoopbackTransport> ClientsSnapshot() => new List<LoopbackTransport>(_clients);
 
-            public LoopbackNetTransport Find(ulong transportId)
+            public LoopbackTransport Find(ulong transportId)
             {
                 if (Host.LocalTransportId == transportId)
                 {

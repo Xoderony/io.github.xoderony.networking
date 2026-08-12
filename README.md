@@ -2,9 +2,10 @@
 
 Lightweight Unity net sync oriented around **Steam + Distributed Authority**:
 
-- Explicit typed messages (no RPC / NetworkVariable)
+- Explicit typed messages (no RPC / NetworkVariable / NetworkBehaviour)
 - Host as relay + ClientId assignment; owners push entity state
-- `INetTransport` with in-process `LoopbackNetTransport` and a Steam stub
+- Industry-standard type names (`NetworkManager`, `NetworkObject`, …) in `Xoderony.Networking`
+- `NetworkTransport` with in-process `LoopbackTransport` and a Steam stub
 
 ## Install
 
@@ -19,47 +20,48 @@ Unity 6 (`6000.0`+) recommended. No NGO dependency.
 ## Quick start (loopback)
 
 ```csharp
-var host = hostGo.AddComponent<NetSession>();
-host.BindTransport(new LoopbackNetTransport("room"));
+using Xoderony.Networking;
+using Xoderony.Networking.Transport;
+
+var host = hostGo.AddComponent<NetworkManager>();
+host.BindTransport(new LoopbackTransport("room"));
 host.StartHost();
-host.Spawn.RegisterPrefab(1, cubePrefab);
+host.SpawnManager.RegisterPrefab(1, cubePrefab);
 
-var client = clientGo.AddComponent<NetSession>();
-client.BindTransport(new LoopbackNetTransport("room"));
-client.Spawn.RegisterPrefab(1, cubePrefab);
+var client = clientGo.AddComponent<NetworkManager>();
+client.BindTransport(new LoopbackTransport("room"));
+client.SpawnManager.RegisterPrefab(1, cubePrefab);
 client.Connected += () => { /* LocalClientId ready */ };
-client.StartClient(LoopbackNetTransport.RoomAddress("room"));
+client.StartClient(LoopbackTransport.RoomAddress("room"));
 
-// Host allocates NetworkId; ownerClientId may be a remote client.
-host.Spawn.Spawn(1, client.LocalClientId, Vector3.zero, Quaternion.identity);
+host.SpawnManager.Spawn(1, client.LocalClientId, Vector3.zero, Quaternion.identity);
 ```
 
 Owner sync:
 
 ```csharp
-public sealed class MyEntity : NetworkEntity
+public sealed class MyObject : NetworkObject
 {
     public void Push()
     {
-        var buffer = new NetBuffer(8);
-        buffer.WriteFloat(transform.position.x);
-        SendState(buffer);
+        var writer = new BufferWriter(8);
+        writer.WriteFloat(transform.position.x);
+        SendState(writer);
     }
 
     protected override void OnNetworkState(ArraySegment<byte> payload) { /* apply */ }
 }
 ```
 
-Application messages: register handlers on `session.Bus` with types `>= NetMessageType.User`, then `SendToOthers`.
+Application messages: register on `networkManager.CustomMessaging` with types `>= NetworkMessageType.User`, then `SendToOthers`.
 
 ## Layout
 
-| Area | Types |
-|------|--------|
-| Session | `NetSession` |
-| Transport | `INetTransport`, `LoopbackNetTransport`, `SteamNetTransport` (stub) |
-| Messaging | `NetMessageBus`, `NetBuffer`, `NetMessageType` |
-| Spawn | `NetSpawn`, `NetworkEntity` |
+| Namespace | Types |
+|-----------|--------|
+| `Xoderony.Networking` | `NetworkManager`, `NetworkObject`, `NetworkSpawnManager`, `BufferWriter`, `BufferReader` |
+| `Xoderony.Networking.Transport` | `NetworkTransport`, `LoopbackTransport`, `SteamNetworkTransport`, `NetworkDelivery` |
+| `Xoderony.Networking.Messaging` | `CustomMessagingManager`, `NetworkMessageType` |
 
 ## Samples
 
@@ -67,7 +69,7 @@ Application messages: register handlers on `session.Bus` with types `>= NetMessa
 
 ## Steam
 
-`SteamNetTransport` is intentionally unwired so this package stays free of a Steamworks dependency. Implement `INetTransport` against SteamNetworkingSockets (or extend the stub) in a game/Steam-specific assembly.
+`SteamNetworkTransport` is intentionally unwired so this package stays free of a Steamworks dependency. Implement `NetworkTransport` against SteamNetworkingSockets in a game/Steam-specific assembly.
 
 ## Status
 

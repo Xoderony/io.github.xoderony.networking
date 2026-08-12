@@ -1,9 +1,12 @@
 using UnityEngine;
+using Xoderony.Networking.Transport;
 
-namespace Xoderony.Networking.Samples.LoopbackDemo
+namespace Xoderony.Networking.Samples
 {
+    using NetworkManager = Xoderony.Networking.NetworkManager;
+
     /// <summary>
-    /// Spins up Host + Client in one process via <see cref="LoopbackNetTransport"/>.
+    /// Spins up Host + Client in one process via <see cref="LoopbackTransport"/>.
     /// Attach to an empty scene object; assign a <see cref="DemoCube"/> prefab with a Renderer.
     /// </summary>
     public sealed class LoopbackDemoBootstrap : MonoBehaviour
@@ -14,8 +17,8 @@ namespace Xoderony.Networking.Samples.LoopbackDemo
         [SerializeField]
         private DemoCube _cubePrefab;
 
-        private NetSession _host;
-        private NetSession _client;
+        private NetworkManager _host;
+        private NetworkManager _client;
         private DemoCube _hostCube;
         private float _nextPaintTime;
 
@@ -28,28 +31,27 @@ namespace Xoderony.Networking.Samples.LoopbackDemo
                 return;
             }
 
-            _host = CreateSession("Host");
-            _host.BindTransport(new LoopbackNetTransport(RoomName));
+            _host = CreateManager("Host");
+            _host.BindTransport(new LoopbackTransport(RoomName));
             _host.StartHost();
-            _host.Spawn.RegisterPrefab(CubePrefabId, _cubePrefab);
+            _host.SpawnManager.RegisterPrefab(CubePrefabId, _cubePrefab);
 
-            _client = CreateSession("Client");
-            _client.BindTransport(new LoopbackNetTransport(RoomName));
+            _client = CreateManager("Client");
+            _client.BindTransport(new LoopbackTransport(RoomName));
             _client.Connected += OnClientConnected;
-            _client.Spawn.RegisterPrefab(CubePrefabId, _cubePrefab);
-            _client.StartClient(LoopbackNetTransport.RoomAddress(RoomName));
+            _client.SpawnManager.RegisterPrefab(CubePrefabId, _cubePrefab);
+            _client.StartClient(LoopbackTransport.RoomAddress(RoomName));
         }
 
         private void OnClientConnected()
         {
-            _hostCube = (DemoCube)_host.Spawn.Spawn(
+            _hostCube = (DemoCube)_host.SpawnManager.Spawn(
                 CubePrefabId,
                 _client.LocalClientId,
                 Vector3.zero,
                 Quaternion.identity);
             _hostCube.SetColorAndSync(Color.cyan);
 
-            // Client is owner: paint from client session's entity after it appears.
             _nextPaintTime = Time.time + 1f;
         }
 
@@ -61,7 +63,7 @@ namespace Xoderony.Networking.Samples.LoopbackDemo
             }
 
             _nextPaintTime = Time.time + 1.5f;
-            if (!_client.Spawn.Entities.TryGetValue(_hostCube.NetworkId, out var remote))
+            if (!_client.SpawnManager.SpawnedObjects.TryGetValue(_hostCube.NetworkObjectId, out var remote))
             {
                 return;
             }
@@ -90,10 +92,10 @@ namespace Xoderony.Networking.Samples.LoopbackDemo
             }
         }
 
-        private static NetSession CreateSession(string name)
+        private static NetworkManager CreateManager(string name)
         {
-            var go = new GameObject($"NetSession-{name}");
-            return go.AddComponent<NetSession>();
+            var go = new GameObject($"NetworkManager-{name}");
+            return go.AddComponent<NetworkManager>();
         }
     }
 }

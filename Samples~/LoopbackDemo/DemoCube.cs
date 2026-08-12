@@ -1,15 +1,20 @@
 using System;
 using UnityEngine;
 
-namespace Xoderony.Networking.Samples.LoopbackDemo
+namespace Xoderony.Networking.Samples
 {
+    using BufferReader = Xoderony.Networking.BufferReader;
+    using BufferWriter = Xoderony.Networking.BufferWriter;
+    using NetworkObject = Xoderony.Networking.NetworkObject;
+
     /// <summary>
-    /// Owner paints a color and pushes it through <see cref="NetworkEntity.SendState"/>.
+    /// Owner paints a color and pushes it through <see cref="NetworkObject.SendState"/>.
     /// </summary>
-    public sealed class DemoCube : NetworkEntity
+    public sealed class DemoCube : NetworkObject
     {
         private Renderer _renderer;
-        private Color _color = Color.white;
+        private readonly BufferWriter _colorPayload = new BufferWriter(16);
+        private readonly BufferReader _colorReader = new BufferReader(16);
 
         private void Awake()
         {
@@ -24,25 +29,27 @@ namespace Xoderony.Networking.Samples.LoopbackDemo
                 return;
             }
 
-            var buffer = new NetBuffer(16);
-            buffer.WriteFloat(color.r);
-            buffer.WriteFloat(color.g);
-            buffer.WriteFloat(color.b);
-            buffer.WriteFloat(color.a);
-            SendState(buffer);
+            _colorPayload.Clear();
+            _colorPayload.WriteFloat(color.r);
+            _colorPayload.WriteFloat(color.g);
+            _colorPayload.WriteFloat(color.b);
+            _colorPayload.WriteFloat(color.a);
+            SendState(_colorPayload);
         }
 
         protected override void OnNetworkState(ArraySegment<byte> payload)
         {
-            var reader = new NetBuffer();
-            reader.Load(payload);
-            var color = new Color(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
+            _colorReader.Load(payload);
+            var color = new Color(
+                _colorReader.ReadFloat(),
+                _colorReader.ReadFloat(),
+                _colorReader.ReadFloat(),
+                _colorReader.ReadFloat());
             ApplyColor(color);
         }
 
         private void ApplyColor(Color color)
         {
-            _color = color;
             if (_renderer != null)
             {
                 _renderer.material.color = color;

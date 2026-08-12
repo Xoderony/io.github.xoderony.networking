@@ -1,6 +1,6 @@
 {
   "name": "Xoderony.Networking.LoopbackDemo",
-  "rootNamespace": "Xoderony.Networking.Samples.LoopbackDemo",
+  "rootNamespace": "Xoderony.Networking.Samples",
   "references": [
     "Xoderony.Networking"
   ],

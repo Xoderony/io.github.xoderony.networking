@@ -10,15 +10,15 @@
 
 ## 包边界
 
-- 独立 UPM：`io.github.xoderony.networking`，程序集/命名空间 `Xoderony.Networking`。
+- 独立 UPM：`io.github.xoderony.networking`，程序集 `Xoderony.Networking`。
 - **禁止**依赖 Journey-of-Guest、`JoG.*`、NGO（`Unity.Netcode`）、或游戏工程内的 Entity/玩法代码。
 - 与游戏的 `io.github.xoderony.netcode`（NGO 扩展）是不同包，勿混名、勿合并职责。
-- Steamworks 不进本包依赖；Steam 走 `INetTransport` 实现（本包仅 stub），Loopback 用于无 Steam 逻辑开发。
+- Steamworks 不进本包依赖；Steam 走 `NetworkTransport` 实现（本包仅 `SteamNetworkTransport` stub），Loopback 用于无 Steam 逻辑开发。
 
 ## 架构原则
 
-- Distributed Authority：Owner 推状态；Host 分配 ClientId、中继消息、权威 Spawn id；无反作弊假设。
-- 显式消息，无 RPC / NetworkVariable。
+- Distributed Authority：Owner 推状态；Host 分配 ClientId、中继消息、权威 NetworkObjectId；无反作弊假设。
+- 显式消息，无 RPC / NetworkVariable / NetworkBehaviour。
 - 约定大于配置；可读与性能优先；用断言暴露违规，不为未证实需求加抽象。
 - C#：UTF-8（无 BOM）、LF；API `PascalCase`；私有字段 `_camelCase`。
 - 热路径避免托管分配；异步若引入则用 UniTask + `CancellationToken`（当前基础层可不引）。
@@ -27,3 +27,6 @@
 
 - GitHub / 目录：`io.github.xoderony.networking`
 - 不用 `NetSync` / `Xoderony.Net`（易误解为状态同步或 .NET）
+- **业界固定类型名直接采用**（`NetworkManager`、`NetworkObject`、`NetworkTransport`、`CustomMessagingManager`、`NetworkSpawnManager`、`NetworkDelivery` 等）；缓冲用朴素名 `BufferWriter`/`BufferReader`（不加 `Fast`）；不造 `NetSession` / `INetTransport` / `NetBuffer` 一类前缀。
+- 与 NGO 同名靠命名空间区分：`Xoderony.Networking.*` vs `Unity.Netcode.*`。
+- 命名空间最多三层：`Xoderony.Networking` / `.Transport` / `.Messaging`（及 Samples）；文件夹匹配 ns 后缀；根类型放 `Runtime/` 根下。

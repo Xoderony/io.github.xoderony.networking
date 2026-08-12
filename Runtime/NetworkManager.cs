@@ -1,25 +1,28 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using Xoderony.Networking.Messaging;
+using Xoderony.Networking.Transport;
 
 namespace Xoderony.Networking
 {
     /// <summary>
-    /// Session entry: Host/Client lifecycle, ClientId assignment, owns bus and spawn.
+    /// Session entry: Host/Client lifecycle, ClientId assignment, owns messaging and spawn.
     /// </summary>
-    public class NetSession : MonoBehaviour
+    public class NetworkManager : MonoBehaviour
     {
-        public const ulong HostClientId = 0;
+        public const ulong ServerClientId = 0;
 
-        private INetTransport _transport;
+        private NetworkTransport _transport;
         private readonly Dictionary<ulong, ulong> _transportToClient = new Dictionary<ulong, ulong>();
         private readonly Dictionary<ulong, ulong> _clientToTransport = new Dictionary<ulong, ulong>();
+        private readonly BufferWriter _welcomePayload = new BufferWriter(16);
         private ulong _nextClientId = 1;
         private bool _connected;
 
-        public INetTransport Transport => _transport;
-        public NetMessageBus Bus { get; private set; }
-        public NetSpawn Spawn { get; private set; }
+        public NetworkTransport NetworkTransport => _transport;
+        public CustomMessagingManager CustomMessaging { get; private set; }
+        public NetworkSpawnManager SpawnManager { get; private set; }
 
         public bool IsHost { get; private set; }
         public bool IsConnected => _connected;
@@ -30,7 +33,7 @@ namespace Xoderony.Networking
         public event Action<ulong> ClientConnected;
         public event Action<ulong> ClientDisconnected;
 
-        public void BindTransport(INetTransport transport)
+        public void BindTransport(NetworkTransport transport)
         {
             if (_connected)
             {
@@ -38,7 +41,7 @@ namespace Xoderony.Networking
             }
 
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
-            EnsureBus();
+            EnsureManagers();
         }
 
         public void StartHost()
@@ -54,9 +57,9 @@ namespace Xoderony.Networking
 
             _transport.StartHost();
             IsHost = true;
-            LocalClientId = HostClientId;
-            _transportToClient[_transport.LocalTransportId] = HostClientId;
-            _clientToTransport[HostClientId] = _transport.LocalTransportId;
+            LocalClientId = ServerClientId;
+            _transportToClient[_transport.LocalTransportId] = ServerClientId;
+            _clientToTransport[ServerClientId] = _transport.LocalTransportId;
             _connected = true;
             Connected?.Invoke();
         }
@@ -73,10 +76,8 @@ namespace Xoderony.Networking
             _transport.DataReceived += OnTransportDataReceived;
 
             IsHost = false;
-            // Loopback may deliver Welcome synchronously inside StartClient.
-            _connected = true;
+            // Connected becomes true on Welcome (may arrive synchronously inside StartClient for loopback).
             _transport.StartClient(remoteAddress);
-            // LocalClientId assigned on Welcome.
         }
 
         public void Shutdown()
@@ -89,7 +90,7 @@ namespace Xoderony.Networking
                 _transport.Disconnect();
             }
 
-            Spawn?.ClearLocal();
+            SpawnManager?.ClearLocal();
             _transportToClient.Clear();
             _clientToTransport.Clear();
             _connected = false;
@@ -110,22 +111,22 @@ namespace Xoderony.Networking
             _transport = null;
         }
 
-        internal void SendRaw(ulong transportPeerId, ArraySegment<byte> data, NetDelivery delivery)
+        internal void SendRaw(ulong transportPeerId, ArraySegment<byte> data, NetworkDelivery delivery)
         {
             _transport.Send(transportPeerId, data, delivery);
         }
 
-        internal void SendRawToHost(ArraySegment<byte> data, NetDelivery delivery)
+        internal void SendRawToServer(ArraySegment<byte> data, NetworkDelivery delivery)
         {
-            if (!_clientToTransport.TryGetValue(HostClientId, out var hostTransportId))
+            if (!_clientToTransport.TryGetValue(ServerClientId, out var serverTransportId))
             {
-                throw new InvalidOperationException("Host transport peer is not mapped.");
+                throw new InvalidOperationException("Server transport peer is not mapped.");
             }
 
-            _transport.Send(hostTransportId, data, delivery);
+            _transport.Send(serverTransportId, data, delivery);
         }
 
-        internal void BroadcastRaw(ArraySegment<byte> data, NetDelivery delivery, ulong excludeTransportId)
+        internal void BroadcastRaw(ArraySegment<byte> data, NetworkDelivery delivery, ulong excludeTransportId)
         {
             foreach (var pair in _transportToClient)
             {
@@ -141,27 +142,27 @@ namespace Xoderony.Networking
         internal bool TryGetTransportId(ulong clientId, out ulong transportId) =>
             _clientToTransport.TryGetValue(clientId, out transportId);
 
-        private void EnsureBus()
+        private void EnsureManagers()
         {
-            if (Bus != null)
+            if (CustomMessaging != null)
             {
                 return;
             }
 
-            Bus = new NetMessageBus(this);
-            Spawn = new NetSpawn(this);
-            Bus.Register(NetMessageType.Welcome, OnWelcome);
-            Bus.Register(NetMessageType.Spawn, Spawn.OnSpawnMessage);
-            Bus.Register(NetMessageType.Despawn, Spawn.OnDespawnMessage);
-            Bus.Register(NetMessageType.EntityState, Spawn.OnEntityStateMessage);
+            CustomMessaging = new CustomMessagingManager(this);
+            SpawnManager = new NetworkSpawnManager(this);
+            CustomMessaging.Register(NetworkMessageType.Welcome, OnWelcome);
+            CustomMessaging.Register(NetworkMessageType.Spawn, SpawnManager.OnSpawnMessage);
+            CustomMessaging.Register(NetworkMessageType.Despawn, SpawnManager.OnDespawnMessage);
+            CustomMessaging.Register(NetworkMessageType.EntityState, SpawnManager.OnEntityStateMessage);
         }
 
         private void OnTransportPeerConnected(ulong transportPeerId)
         {
             if (!IsHost)
             {
-                _transportToClient[transportPeerId] = HostClientId;
-                _clientToTransport[HostClientId] = transportPeerId;
+                _transportToClient[transportPeerId] = ServerClientId;
+                _clientToTransport[ServerClientId] = transportPeerId;
                 return;
             }
 
@@ -169,12 +170,17 @@ namespace Xoderony.Networking
             _transportToClient[transportPeerId] = clientId;
             _clientToTransport[clientId] = transportPeerId;
 
-            var payload = new NetBuffer(16);
-            payload.WriteULong(clientId);
-            Bus.SendRawToTransportPeer(transportPeerId, NetMessageType.Welcome, HostClientId, payload.AsSegment(), NetDelivery.Reliable);
+            _welcomePayload.Clear();
+            _welcomePayload.WriteULong(clientId);
+            CustomMessaging.SendRawToTransportPeer(
+                transportPeerId,
+                NetworkMessageType.Welcome,
+                ServerClientId,
+                _welcomePayload.AsSegment(),
+                NetworkDelivery.Reliable);
 
             ClientConnected?.Invoke(clientId);
-            Spawn.SendSnapshotTo(transportPeerId);
+            SpawnManager.SendSnapshotTo(transportPeerId);
         }
 
         private void OnTransportPeerDisconnected(ulong transportPeerId)
@@ -189,7 +195,7 @@ namespace Xoderony.Networking
 
             if (IsHost)
             {
-                Spawn.DespawnOwnedBy(clientId);
+                SpawnManager.DespawnOwnedBy(clientId);
                 ClientDisconnected?.Invoke(clientId);
             }
             else
@@ -198,14 +204,15 @@ namespace Xoderony.Networking
             }
         }
 
-        private void OnTransportDataReceived(ulong transportPeerId, ArraySegment<byte> data, NetDelivery delivery)
+        private void OnTransportDataReceived(ulong transportPeerId, ArraySegment<byte> data, NetworkDelivery delivery)
         {
-            Bus.HandleIncoming(transportPeerId, data, delivery);
+            CustomMessaging.HandleIncoming(transportPeerId, data, delivery);
         }
 
-        private void OnWelcome(ulong senderClientId, NetBuffer reader)
+        private void OnWelcome(ulong senderClientId, BufferReader reader)
         {
             LocalClientId = reader.ReadULong();
+            _connected = true;
             Connected?.Invoke();
         }
     }

@@ -1,9 +1,9 @@
-namespace Xoderony.Networking
+namespace Xoderony.Networking.Messaging
 {
     /// <summary>
     /// Built-in protocol types. User messages should use values &gt;= <see cref="User"/>.
     /// </summary>
-    public static class NetMessageType
+    public static class NetworkMessageType
     {
         public const ushort Welcome = 1;
         public const ushort Spawn = 2;
