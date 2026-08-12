@@ -1,0 +1,12 @@
+---
+description: 新对话先读仓库上下文；本包为独立 Networking 底座
+alwaysApply: true
+---
+
+# Xoderony.Networking
+
+开始任何任务前先读根目录 `AGENTS.md` 与 `PROJECT_CONTEXT.md`。
+
+- 独立 UPM，命名空间 `Xoderony.Networking`；无 NGO / JoG / Journey-of-Guest 依赖。
+- DA + 显式消息 + Host 中继；Steam 仅 `INetTransport`，逻辑开发用 Loopback。
+- 默认简体中文；只改任务所需；未要求不跑 Unity 编译、不做 Git。
