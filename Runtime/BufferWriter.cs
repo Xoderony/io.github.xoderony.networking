@@ -9,6 +9,9 @@ namespace Xoderony.Networking {
 
         public readonly int Remaining => Buffer.Length - DataLength;
 
+        /// <summary>已写入的数据。</summary>
+        public readonly ReadOnlySpan<byte> Written => Buffer[..DataLength];
+
         public BufferWriter(Span<byte> buffer) {
             Buffer = buffer;
             DataLength = 0;

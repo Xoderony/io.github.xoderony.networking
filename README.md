@@ -5,7 +5,7 @@ Lightweight Unity net sync oriented around **Steam + Distributed Authority**:
 - Explicit typed messages (no RPC / NetworkVariable / NetworkBehaviour)
 - Host as relay + ClientId assignment; owners push entity state
 - Industry-standard type names (`NetworkManager`, `NetworkObject`, …) in `Xoderony.Networking`
-- `NetworkTransport` with in-process `LoopbackTransport` (the Steam transport lives in the game project)
+- `INetworkTransport` with in-process `LoopbackTransport` (the Steam transport lives in the game project)
 
 ## Install
 
@@ -60,8 +60,8 @@ Application messages: register on `networkManager.CustomMessaging` with types `>
 | Namespace | Types |
 |-----------|--------|
 | `Xoderony.Networking` | `NetworkManager`, `NetworkObject`, `NetworkSpawnManager`, `BufferWriter`, `BufferReader` |
-| `Xoderony.Networking.Transport` | `NetworkTransport`, `LoopbackTransport`, `NetworkDelivery` |
-| `Xoderony.Networking.Messaging` | `CustomMessagingManager`, `NetworkMessageType` |
+| `Xoderony.Networking.Transport` | `INetworkTransport`, `LoopbackTransport`, `NetworkDelivery` |
+| `Xoderony.Networking.Messaging` | `NetworkMessageType` |
 
 ## Samples
 

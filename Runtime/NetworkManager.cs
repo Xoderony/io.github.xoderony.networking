@@ -1,219 +1,163 @@
 using System;
 using System.Collections.Generic;
-using UnityEngine;
 using Xoderony.Networking.Messaging;
 using Xoderony.Networking.Transport;
 
-namespace Xoderony.Networking
-{
+namespace Xoderony.Networking {
+    /// <summary>网络消息处理委托。</summary>
+    public delegate void NetworkMessageHandler(ulong senderPeerId, BufferReader reader);
+
     /// <summary>
-    /// Session entry: Host/Client lifecycle, ClientId assignment, owns messaging and spawn.
+    /// 对等会话实现：构造注入传输、启动/停止、消息协议与网格直发。
+    /// 无服务器/客户端之分：所有对端平等，PeerId 即传输端 id（Steam 下为 SteamID）。
+    /// 不依赖 MonoBehaviour：每帧由外部驱动调用 <see cref="Poll"/>，清理由调用方调用 <see cref="Stop"/>。
+    /// 生成管理器（SpawnManager）由生成模块接入。
     /// </summary>
-    public class NetworkManager : MonoBehaviour
-    {
-        public const ulong ServerClientId = 0;
+    public class NetworkManager : INetworkManager {
+        private readonly INetworkTransport _transport;
+        private readonly HashSet<ulong> _peers = new HashSet<ulong>();
+        // 消息类型为 byte（0–255），数组下标映射 O(1)。
+        private readonly NetworkMessageHandler[] _handlers = new NetworkMessageHandler[byte.MaxValue + 1];
+        /// <summary>内置协议最大固定头：Spawn 的 LocalId + PrefabId + 位置/旋转（取安全上限，不感知具体协议）。</summary>
+        private const int MaxProtocolHeaderSize = sizeof(uint) + sizeof(ushort) + (sizeof(float) * 7);
 
-        private NetworkTransport _transport;
-        private readonly Dictionary<ulong, ulong> _transportToClient = new Dictionary<ulong, ulong>();
-        private readonly Dictionary<ulong, ulong> _clientToTransport = new Dictionary<ulong, ulong>();
-        private readonly BufferWriter _welcomePayload = new BufferWriter(16);
-        private ulong _nextClientId = 1;
-        private bool _connected;
+        /// <summary>信封缓冲容量：type(1) + sender(8) + 最大固定头 + 状态数据上限；固定容量，不动态扩容。</summary>
+        private const int EnvelopeCapacity = sizeof(byte) + sizeof(ulong) + MaxProtocolHeaderSize + NetworkMessageLimits.StateDataCapacity;
 
-        public NetworkTransport NetworkTransport => _transport;
-        public CustomMessagingManager CustomMessaging { get; private set; }
-        public NetworkSpawnManager SpawnManager { get; private set; }
+        private readonly byte[] _envelopeBuffer = new byte[EnvelopeCapacity];
+        private int _envelopeLength;
 
-        public bool IsHost { get; private set; }
-        public bool IsConnected => _connected;
-        public ulong LocalClientId { get; private set; }
+        public INetworkTransport NetworkTransport => _transport;
 
-        public event Action Connected;
-        public event Action Disconnected;
-        public event Action<ulong> ClientConnected;
-        public event Action<ulong> ClientDisconnected;
+        public SessionState State { get; private set; } = SessionState.Stopped;
+        public ulong LocalPeerId { get; private set; }
 
-        public void BindTransport(NetworkTransport transport)
-        {
-            if (_connected)
-            {
-                throw new InvalidOperationException("Cannot bind transport while connected.");
-            }
+        public bool IsRunning => State == SessionState.Running;
 
-            _transport = transport ?? throw new ArgumentNullException(nameof(transport));
-            EnsureManagers();
+        public event Action Started;
+        public event Action Stopped;
+        public event Action<ulong> PeerJoined;
+        public event Action<ulong> PeerLeft;
+
+        public NetworkManager(INetworkTransport transport) {
+            _transport = transport;
         }
 
-        public void StartHost()
-        {
-            if (_transport == null)
-            {
-                throw new InvalidOperationException("Call BindTransport before StartHost.");
+        public bool Start() {
+            if (State != SessionState.Stopped) {
+                return false;
             }
 
+            SubscribeTransportEvents();
+            if (!_transport.Start()) {
+                UnsubscribeTransportEvents();
+                return false;
+            }
+
+            LocalPeerId = _transport.LocalPeerId;
+            State = SessionState.Running;
+            Started?.Invoke();
+            return true;
+        }
+
+        public void Stop() {
+            if (State == SessionState.Stopped) {
+                return;
+            }
+
+            UnsubscribeTransportEvents();
+            _transport.Stop();
+            _peers.Clear();
+            LocalPeerId = 0;
+            State = SessionState.Stopped;
+            Stopped?.Invoke();
+        }
+
+        /// <summary>每帧驱动传输处理底层事件；由外部生命周期调用。</summary>
+        public void Poll() {
+            _transport.Poll();
+        }
+
+        /// <summary>注册消息处理。</summary>
+        public void RegisterMessage(byte messageType, NetworkMessageHandler handler) {
+            _handlers[messageType] += handler;
+        }
+
+        /// <summary>注销消息处理。</summary>
+        public void UnregisterMessage(byte messageType, NetworkMessageHandler handler) {
+            _handlers[messageType] -= handler;
+        }
+
+        /// <summary>发送给所有已连接对端（网格直发）。</summary>
+        public void SendToOthers(byte messageType, BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable) {
+            BuildEnvelope(messageType, LocalPeerId, payload.Written);
+            foreach (var peerId in _peers) {
+                _transport.SendData(peerId, Envelope, delivery);
+            }
+        }
+
+        /// <summary>
+        /// 广播给所有已连接对端并本地投递（本地回显走同一 handler）。
+        /// 先发对端再本地回显：保证本条消息先于本地 handler 派生的后续消息到达对端（Reliable 有序下）。
+        /// </summary>
+        public void SendToAll(byte messageType, BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable) {
+            SendToOthers(messageType, payload, delivery);
+            _handlers[messageType]?.Invoke(LocalPeerId, new BufferReader(payload.Written));
+        }
+
+        /// <summary>定向发送给指定对端（需已建立连接）。</summary>
+        public void SendToPeer(ulong peerId, byte messageType, BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable) {
+            BuildEnvelope(messageType, LocalPeerId, payload.Written);
+            _transport.SendData(peerId, Envelope, delivery);
+        }
+
+        /// <summary>建立到指定对端（SteamID）的直连。</summary>
+        public bool ConnectPeer(ulong peerId) {
+            return _transport.ConnectPeer(peerId);
+        }
+
+        private void SubscribeTransportEvents() {
             _transport.PeerConnected += OnTransportPeerConnected;
             _transport.PeerDisconnected += OnTransportPeerDisconnected;
             _transport.DataReceived += OnTransportDataReceived;
-
-            _transport.StartHost();
-            IsHost = true;
-            LocalClientId = ServerClientId;
-            _transportToClient[_transport.LocalTransportId] = ServerClientId;
-            _clientToTransport[ServerClientId] = _transport.LocalTransportId;
-            _connected = true;
-            Connected?.Invoke();
         }
 
-        public void StartClient(ulong remoteAddress)
-        {
-            if (_transport == null)
-            {
-                throw new InvalidOperationException("Call BindTransport before StartClient.");
-            }
-
-            _transport.PeerConnected += OnTransportPeerConnected;
-            _transport.PeerDisconnected += OnTransportPeerDisconnected;
-            _transport.DataReceived += OnTransportDataReceived;
-
-            IsHost = false;
-            // Connected becomes true on Welcome (may arrive synchronously inside StartClient for loopback).
-            _transport.StartClient(remoteAddress);
+        private void UnsubscribeTransportEvents() {
+            _transport.PeerConnected -= OnTransportPeerConnected;
+            _transport.PeerDisconnected -= OnTransportPeerDisconnected;
+            _transport.DataReceived -= OnTransportDataReceived;
         }
 
-        public void Shutdown()
-        {
-            if (_transport != null)
-            {
-                _transport.PeerConnected -= OnTransportPeerConnected;
-                _transport.PeerDisconnected -= OnTransportPeerDisconnected;
-                _transport.DataReceived -= OnTransportDataReceived;
-                _transport.Disconnect();
-            }
-
-            SpawnManager?.ClearLocal();
-            _transportToClient.Clear();
-            _clientToTransport.Clear();
-            _connected = false;
-            IsHost = false;
-            LocalClientId = 0;
-            Disconnected?.Invoke();
-        }
-
-        private void Update()
-        {
-            _transport?.Poll();
-        }
-
-        private void OnDestroy()
-        {
-            Shutdown();
-            _transport?.Dispose();
-            _transport = null;
-        }
-
-        internal void SendRaw(ulong transportPeerId, ArraySegment<byte> data, NetworkDelivery delivery)
-        {
-            _transport.Send(transportPeerId, data, delivery);
-        }
-
-        internal void SendRawToServer(ArraySegment<byte> data, NetworkDelivery delivery)
-        {
-            if (!_clientToTransport.TryGetValue(ServerClientId, out var serverTransportId))
-            {
-                throw new InvalidOperationException("Server transport peer is not mapped.");
-            }
-
-            _transport.Send(serverTransportId, data, delivery);
-        }
-
-        internal void BroadcastRaw(ArraySegment<byte> data, NetworkDelivery delivery, ulong excludeTransportId)
-        {
-            foreach (var pair in _transportToClient)
-            {
-                if (pair.Key == _transport.LocalTransportId || pair.Key == excludeTransportId)
-                {
-                    continue;
-                }
-
-                _transport.Send(pair.Key, data, delivery);
+        private void OnTransportPeerConnected(ulong transportPeerId) {
+            if (_peers.Add(transportPeerId)) {
+                PeerJoined?.Invoke(transportPeerId);
             }
         }
 
-        internal bool TryGetTransportId(ulong clientId, out ulong transportId) =>
-            _clientToTransport.TryGetValue(clientId, out transportId);
-
-        private void EnsureManagers()
-        {
-            if (CustomMessaging != null)
-            {
-                return;
-            }
-
-            CustomMessaging = new CustomMessagingManager(this);
-            SpawnManager = new NetworkSpawnManager(this);
-            CustomMessaging.Register(NetworkMessageType.Welcome, OnWelcome);
-            CustomMessaging.Register(NetworkMessageType.Spawn, SpawnManager.OnSpawnMessage);
-            CustomMessaging.Register(NetworkMessageType.Despawn, SpawnManager.OnDespawnMessage);
-            CustomMessaging.Register(NetworkMessageType.EntityState, SpawnManager.OnEntityStateMessage);
-        }
-
-        private void OnTransportPeerConnected(ulong transportPeerId)
-        {
-            if (!IsHost)
-            {
-                _transportToClient[transportPeerId] = ServerClientId;
-                _clientToTransport[ServerClientId] = transportPeerId;
-                return;
-            }
-
-            var clientId = _nextClientId++;
-            _transportToClient[transportPeerId] = clientId;
-            _clientToTransport[clientId] = transportPeerId;
-
-            _welcomePayload.Clear();
-            _welcomePayload.WriteULong(clientId);
-            CustomMessaging.SendRawToTransportPeer(
-                transportPeerId,
-                NetworkMessageType.Welcome,
-                ServerClientId,
-                _welcomePayload.AsSegment(),
-                NetworkDelivery.Reliable);
-
-            ClientConnected?.Invoke(clientId);
-            SpawnManager.SendSnapshotTo(transportPeerId);
-        }
-
-        private void OnTransportPeerDisconnected(ulong transportPeerId)
-        {
-            if (!_transportToClient.TryGetValue(transportPeerId, out var clientId))
-            {
-                return;
-            }
-
-            _transportToClient.Remove(transportPeerId);
-            _clientToTransport.Remove(clientId);
-
-            if (IsHost)
-            {
-                SpawnManager.DespawnOwnedBy(clientId);
-                ClientDisconnected?.Invoke(clientId);
-            }
-            else
-            {
-                Shutdown();
+        private void OnTransportPeerDisconnected(ulong transportPeerId) {
+            if (_peers.Remove(transportPeerId)) {
+                PeerLeft?.Invoke(transportPeerId);
             }
         }
 
-        private void OnTransportDataReceived(ulong transportPeerId, ArraySegment<byte> data, NetworkDelivery delivery)
-        {
-            CustomMessaging.HandleIncoming(transportPeerId, data, delivery);
+        private void OnTransportDataReceived(ulong transportPeerId, ReadOnlySpan<byte> data, NetworkDelivery delivery) {
+            var reader = new BufferReader(data);
+            var messageType = reader.ReadByte();
+            var senderPeerId = reader.ReadULong();
+            var payload = reader.Buffer[reader.Position..];
+
+            var handler = _handlers[messageType];
+            handler?.Invoke(senderPeerId, new BufferReader(payload));
         }
 
-        private void OnWelcome(ulong senderClientId, BufferReader reader)
-        {
-            LocalClientId = reader.ReadULong();
-            _connected = true;
-            Connected?.Invoke();
+        private void BuildEnvelope(byte messageType, ulong senderPeerId, ReadOnlySpan<byte> payload) {
+            var writer = new BufferWriter(_envelopeBuffer);
+            writer.WriteByte(messageType);
+            writer.WriteULong(senderPeerId);
+            writer.WriteBytes(payload);
+            _envelopeLength = writer.DataLength;
         }
+
+        private ReadOnlySpan<byte> Envelope => _envelopeBuffer.AsSpan(0, _envelopeLength);
     }
 }

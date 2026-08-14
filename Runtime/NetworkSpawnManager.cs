@@ -6,290 +6,222 @@ using Xoderony.Networking.Transport;
 
 namespace Xoderony.Networking
 {
+    /// <summary>
+    /// 对等网格生成管理：本端对象由本端派生 id 并广播 Spawn，无主机、无中继。
+    /// 新对等端加入时向其补发本端拥有的对象；对等端离开或会话停止时清理本地对象。
+    /// 构造即接入会话（注册 Spawn/Despawn/EntityState 与 Peer*/Stopped），会话停止时自动注销。
+    /// </summary>
     public sealed class NetworkSpawnManager
     {
+        /// <summary>Spawn 固定头：LocalId + PrefabId + 位置/旋转。</summary>
+        private const int SpawnHeaderSize = sizeof(uint) + sizeof(ushort) + sizeof(float) * 7;
+
+        /// <summary>Spawn 信封容量：固定头 + 初始状态（上限见 <see cref="NetworkMessageLimits.StateDataCapacity"/>）。</summary>
+        private const int SpawnEnvelopeCapacity = SpawnHeaderSize + NetworkMessageLimits.StateDataCapacity;
+
         private readonly NetworkManager _networkManager;
         private readonly Dictionary<ushort, NetworkObject> _prefabs = new Dictionary<ushort, NetworkObject>();
-        private readonly Dictionary<uint, NetworkObject> _networkObjects = new Dictionary<uint, NetworkObject>();
-        private readonly BufferWriter _scratch = new BufferWriter(64);
-        private readonly BufferWriter _initialScratch = new BufferWriter(64);
-        private uint _nextNetworkObjectId = 1;
+        private readonly Dictionary<NetworkObjectId, NetworkObject> _networkObjects = new Dictionary<NetworkObjectId, NetworkObject>();
+        private readonly byte[] _spawnBuffer = new byte[SpawnEnvelopeCapacity];
+        private uint _nextLocalId = 1;
 
-        internal NetworkSpawnManager(NetworkManager networkManager)
+        public NetworkSpawnManager(NetworkManager networkManager)
         {
             _networkManager = networkManager;
+            networkManager.RegisterMessage(NetworkMessageType.Spawn, OnSpawnMessage);
+            networkManager.RegisterMessage(NetworkMessageType.Despawn, OnDespawnMessage);
+            networkManager.RegisterMessage(NetworkMessageType.EntityState, OnEntityStateMessage);
+            networkManager.PeerJoined += OnPeerJoined;
+            networkManager.PeerLeft += OnPeerLeft;
+            networkManager.Stopped += OnSessionStopped;
         }
 
-        public IReadOnlyDictionary<uint, NetworkObject> SpawnedObjects => _networkObjects;
+        public IReadOnlyDictionary<NetworkObjectId, NetworkObject> SpawnedObjects => _networkObjects;
 
         public void RegisterPrefab(ushort prefabId, NetworkObject prefab)
         {
-            if (prefab == null)
-            {
-                throw new ArgumentNullException(nameof(prefab));
-            }
-
             _prefabs[prefabId] = prefab;
         }
 
         /// <summary>
-        /// Spawn a prefab owned by <paramref name="ownerClientId"/>.
-        /// Host allocates ids; clients request via Host relay of Spawn message with id 0.
+        /// 以本机为拥有者生成对象并广播给所有对端。id 由本端派生（见 <see cref="NetworkObjectId"/>），
+        /// 初始状态字节数受基础协议数据上限约束（见 <see cref="NetworkMessageLimits.StateDataCapacity"/>）。
         /// </summary>
         public NetworkObject Spawn(
             ushort prefabId,
-            ulong ownerClientId,
             Vector3 position,
             Quaternion rotation,
-            BufferWriter initialState = null)
+            BufferWriter initialState = default)
         {
-            if (!_networkManager.IsConnected)
+            var id = new NetworkObjectId(_networkManager.LocalPeerId, _nextLocalId++);
+            var instance = InstantiateLocal(id, prefabId, position, rotation, initialState.Written);
+
+            var writer = new BufferWriter(_spawnBuffer);
+            writer.WriteUInt(id.LocalId);
+            writer.WriteUShort(prefabId);
+            writer.WriteFloat(position.x);
+            writer.WriteFloat(position.y);
+            writer.WriteFloat(position.z);
+            writer.WriteFloat(rotation.x);
+            writer.WriteFloat(rotation.y);
+            writer.WriteFloat(rotation.z);
+            writer.WriteFloat(rotation.w);
+            if (initialState.DataLength > 0)
             {
-                throw new InvalidOperationException("Session is not connected.");
+                writer.WriteBytes(initialState.Written);
             }
 
-            if (_networkManager.IsHost)
-            {
-                return SpawnAsHost(prefabId, ownerClientId, position, rotation, initialState);
-            }
-
-            _scratch.Clear();
-            _scratch.WriteUInt(0);
-            _scratch.WriteUShort(prefabId);
-            _scratch.WriteULong(ownerClientId);
-            _scratch.WriteFloat(position.x);
-            _scratch.WriteFloat(position.y);
-            _scratch.WriteFloat(position.z);
-            _scratch.WriteFloat(rotation.x);
-            _scratch.WriteFloat(rotation.y);
-            _scratch.WriteFloat(rotation.z);
-            _scratch.WriteFloat(rotation.w);
-            if (initialState != null && initialState.Length > 0)
-            {
-                _scratch.WriteBytes(initialState.AsSegment());
-            }
-
-            _networkManager.CustomMessaging.SendToOthers(NetworkMessageType.Spawn, _scratch, NetworkDelivery.Reliable);
-            return null;
+            _networkManager.SendToOthers(NetworkMessageType.Spawn, writer, NetworkDelivery.Reliable);
+            return instance;
         }
 
-        public void Despawn(uint networkObjectId)
+        /// <summary>销毁本端拥有的对象并广播 Despawn。仅拥有者可调用。</summary>
+        public void Despawn(NetworkObject networkObject)
         {
-            if (!_networkObjects.TryGetValue(networkObjectId, out var networkObject))
-            {
-                return;
-            }
+            Debug.Assert(networkObject.IsOwner, "Only the owner can despawn a network object.");
 
-            if (!_networkManager.IsHost && !networkObject.IsOwner)
-            {
-                throw new InvalidOperationException("Only host or owner can despawn.");
-            }
-
-            if (_networkManager.IsHost)
-            {
-                BroadcastDespawn(networkObjectId);
-                DestroyLocal(networkObjectId);
-            }
-            else
-            {
-                _scratch.Clear();
-                _scratch.WriteUInt(networkObjectId);
-                _networkManager.CustomMessaging.SendToOthers(NetworkMessageType.Despawn, _scratch, NetworkDelivery.Reliable);
-            }
+            var writer = new BufferWriter(_spawnBuffer);
+            writer.WriteUInt(networkObject.Id.LocalId);
+            _networkManager.SendToOthers(NetworkMessageType.Despawn, writer, NetworkDelivery.Reliable);
+            DestroyLocal(networkObject.Id);
         }
 
-        internal void ClearLocal()
+        private void OnPeerJoined(ulong peerId)
         {
-            var ids = new List<uint>(_networkObjects.Keys);
-            for (var i = 0; i < ids.Count; i++)
-            {
-                DestroyLocal(ids[i]);
-            }
-        }
-
-        internal void DespawnOwnedBy(ulong clientId)
-        {
-            var toRemove = new List<uint>();
+            var owned = new List<NetworkObject>(_networkObjects.Count);
             foreach (var pair in _networkObjects)
             {
-                if (pair.Value.OwnerClientId == clientId)
+                if (pair.Value.Id.PeerId == _networkManager.LocalPeerId)
                 {
-                    toRemove.Add(pair.Key);
+                    owned.Add(pair.Value);
                 }
             }
 
-            for (var i = 0; i < toRemove.Count; i++)
+            foreach (var networkObject in owned)
             {
-                BroadcastDespawn(toRemove[i]);
-                DestroyLocal(toRemove[i]);
+                SendSpawnTo(peerId, networkObject);
             }
         }
 
-        internal void SendSnapshotTo(ulong transportPeerId)
+        private void OnPeerLeft(ulong peerId)
         {
+            var ids = new List<NetworkObjectId>(_networkObjects.Count);
             foreach (var pair in _networkObjects)
             {
-                var networkObject = pair.Value;
-                var t = networkObject.transform;
-                _scratch.Clear();
-                _scratch.WriteUInt(networkObject.NetworkObjectId);
-                _scratch.WriteUShort(networkObject.PrefabId);
-                _scratch.WriteULong(networkObject.OwnerClientId);
-                _scratch.WriteFloat(t.position.x);
-                _scratch.WriteFloat(t.position.y);
-                _scratch.WriteFloat(t.position.z);
-                _scratch.WriteFloat(t.rotation.x);
-                _scratch.WriteFloat(t.rotation.y);
-                _scratch.WriteFloat(t.rotation.z);
-                _scratch.WriteFloat(t.rotation.w);
-                _networkManager.CustomMessaging.SendRawToTransportPeer(
-                    transportPeerId,
-                    NetworkMessageType.Spawn,
-                    NetworkManager.ServerClientId,
-                    _scratch.AsSegment(),
-                    NetworkDelivery.Reliable);
+                if (pair.Value.Id.PeerId == peerId)
+                {
+                    ids.Add(pair.Key);
+                }
+            }
+
+            foreach (var id in ids)
+            {
+                DestroyLocal(id);
             }
         }
 
-        internal void OnSpawnMessage(ulong senderClientId, BufferReader reader)
+        private void OnSessionStopped()
         {
-            var networkObjectId = reader.ReadUInt();
+            _networkManager.UnregisterMessage(NetworkMessageType.Spawn, OnSpawnMessage);
+            _networkManager.UnregisterMessage(NetworkMessageType.Despawn, OnDespawnMessage);
+            _networkManager.UnregisterMessage(NetworkMessageType.EntityState, OnEntityStateMessage);
+            _networkManager.PeerJoined -= OnPeerJoined;
+            _networkManager.PeerLeft -= OnPeerLeft;
+            _networkManager.Stopped -= OnSessionStopped;
+            ClearLocal();
+        }
+
+        private void OnSpawnMessage(ulong senderPeerId, BufferReader reader)
+        {
+            var id = new NetworkObjectId(senderPeerId, reader.ReadUInt());
             var prefabId = reader.ReadUShort();
-            var ownerClientId = reader.ReadULong();
             var position = new Vector3(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
             var rotation = new Quaternion(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
-            BufferWriter initial = null;
-            if (reader.Position < reader.Length)
-            {
-                var remaining = reader.ReadByteSegment(reader.Length - reader.Position);
-                _initialScratch.Clear();
-                _initialScratch.WriteBytes(remaining);
-                initial = _initialScratch;
-            }
-
-            if (_networkManager.IsHost && networkObjectId == 0)
-            {
-                SpawnAsHost(prefabId, ownerClientId, position, rotation, initial);
-                return;
-            }
-
-            if (_networkObjects.ContainsKey(networkObjectId))
+            if (_networkObjects.ContainsKey(id))
             {
                 return;
             }
 
-            InstantiateLocal(networkObjectId, prefabId, ownerClientId, position, rotation, initial);
+            InstantiateLocal(id, prefabId, position, rotation, reader.Buffer[reader.Position..]);
         }
 
-        internal void OnDespawnMessage(ulong senderClientId, BufferReader reader)
+        private void OnDespawnMessage(ulong senderPeerId, BufferReader reader)
         {
-            var networkObjectId = reader.ReadUInt();
-            if (_networkManager.IsHost)
-            {
-                if (_networkObjects.TryGetValue(networkObjectId, out var networkObject) &&
-                    networkObject.OwnerClientId != senderClientId &&
-                    senderClientId != NetworkManager.ServerClientId)
-                {
-                    return;
-                }
-
-                BroadcastDespawn(networkObjectId);
-                DestroyLocal(networkObjectId);
-                return;
-            }
-
-            DestroyLocal(networkObjectId);
+            DestroyLocal(new NetworkObjectId(senderPeerId, reader.ReadUInt()));
         }
 
-        internal void OnEntityStateMessage(ulong senderClientId, BufferReader reader)
+        private void OnEntityStateMessage(ulong senderPeerId, BufferReader reader)
         {
-            var networkObjectId = reader.ReadUInt();
-            if (!_networkObjects.TryGetValue(networkObjectId, out var networkObject))
+            var id = new NetworkObjectId(senderPeerId, reader.ReadUInt());
+            if (!_networkObjects.TryGetValue(id, out var networkObject))
             {
                 return;
             }
 
-            if (networkObject.OwnerClientId != senderClientId)
-            {
-                return;
-            }
-
-            var payload = reader.ReadByteSegment(reader.Length - reader.Position);
-            networkObject.ReceiveState(payload);
+            networkObject.ReceiveState(reader.Buffer[reader.Position..]);
         }
 
-        private NetworkObject SpawnAsHost(
-            ushort prefabId,
-            ulong ownerClientId,
-            Vector3 position,
-            Quaternion rotation,
-            BufferWriter initialState)
+        private void SendSpawnTo(ulong peerId, NetworkObject networkObject)
         {
-            var networkObjectId = _nextNetworkObjectId++;
-            var networkObject = InstantiateLocal(networkObjectId, prefabId, ownerClientId, position, rotation, initialState);
-
-            _scratch.Clear();
-            _scratch.WriteUInt(networkObjectId);
-            _scratch.WriteUShort(prefabId);
-            _scratch.WriteULong(ownerClientId);
-            _scratch.WriteFloat(position.x);
-            _scratch.WriteFloat(position.y);
-            _scratch.WriteFloat(position.z);
-            _scratch.WriteFloat(rotation.x);
-            _scratch.WriteFloat(rotation.y);
-            _scratch.WriteFloat(rotation.z);
-            _scratch.WriteFloat(rotation.w);
-            if (initialState != null && initialState.Length > 0)
-            {
-                _scratch.WriteBytes(initialState.AsSegment());
-            }
-
-            _networkManager.CustomMessaging.SendToOthers(NetworkMessageType.Spawn, _scratch, NetworkDelivery.Reliable);
-            return networkObject;
+            var t = networkObject.transform;
+            var writer = new BufferWriter(_spawnBuffer);
+            writer.WriteUInt(networkObject.Id.LocalId);
+            writer.WriteUShort(networkObject.PrefabId);
+            writer.WriteFloat(t.position.x);
+            writer.WriteFloat(t.position.y);
+            writer.WriteFloat(t.position.z);
+            writer.WriteFloat(t.rotation.x);
+            writer.WriteFloat(t.rotation.y);
+            writer.WriteFloat(t.rotation.z);
+            writer.WriteFloat(t.rotation.w);
+            _networkManager.SendToPeer(peerId, NetworkMessageType.Spawn, writer, NetworkDelivery.Reliable);
         }
 
         private NetworkObject InstantiateLocal(
-            uint networkObjectId,
+            NetworkObjectId id,
             ushort prefabId,
-            ulong ownerClientId,
             Vector3 position,
             Quaternion rotation,
-            BufferWriter initialState)
+            ReadOnlySpan<byte> initialState)
         {
-            if (!_prefabs.TryGetValue(prefabId, out var prefab))
-            {
-                throw new InvalidOperationException($"Prefab id {prefabId} is not registered.");
-            }
+            _prefabs.TryGetValue(prefabId, out var prefab);
+            Debug.Assert(prefab != null, $"Prefab id {prefabId} is not registered.");
 
             var instance = UnityEngine.Object.Instantiate(prefab, position, rotation);
-            instance.Bind(_networkManager, networkObjectId, ownerClientId, prefabId);
-            _networkObjects[networkObjectId] = instance;
-
-            if (initialState != null && initialState.Length > 0)
+            instance.Bind(_networkManager, id, prefabId);
+            _networkObjects[id] = instance;
+            if (!initialState.IsEmpty)
             {
-                instance.ReceiveState(initialState.AsSegment());
+                instance.ReceiveState(initialState);
             }
 
             return instance;
         }
 
-        private void BroadcastDespawn(uint networkObjectId)
+        private void DestroyLocal(NetworkObjectId id)
         {
-            _scratch.Clear();
-            _scratch.WriteUInt(networkObjectId);
-            _networkManager.CustomMessaging.SendToOthers(NetworkMessageType.Despawn, _scratch, NetworkDelivery.Reliable);
-        }
-
-        private void DestroyLocal(uint networkObjectId)
-        {
-            if (!_networkObjects.TryGetValue(networkObjectId, out var networkObject))
+            if (!_networkObjects.TryGetValue(id, out var networkObject))
             {
                 return;
             }
 
-            _networkObjects.Remove(networkObjectId);
+            _networkObjects.Remove(id);
             networkObject.Unbind();
             UnityEngine.Object.Destroy(networkObject.gameObject);
+        }
+
+        private void ClearLocal()
+        {
+            var ids = new List<NetworkObjectId>(_networkObjects.Count);
+            foreach (var id in _networkObjects.Keys)
+            {
+                ids.Add(id);
+            }
+
+            foreach (var id in ids)
+            {
+                DestroyLocal(id);
+            }
         }
     }
 }

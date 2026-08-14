@@ -13,6 +13,8 @@ namespace Xoderony.Networking.Transport
     {
         /// <summary>
         /// 不保证顺序与送达，路径最快。用于高频瞬态状态，只关心最新值。
+        /// 载荷上限取决于传输实现（Steam 下无分片 Unreliable 约 1200 字节），超出由传输拒绝；
+        /// 协议消息默认 Reliable，不受此限。
         /// </summary>
         Unreliable = 0,
 
