@@ -62,7 +62,7 @@ namespace Xoderony.Networking.Samples
                 writer.WriteFloat(color.a);
             }
 
-            public override void Read(BufferReader reader)
+            public override void Read(ref BufferReader reader)
             {
                 _owner.ApplyColor(new Color(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat()));
             }

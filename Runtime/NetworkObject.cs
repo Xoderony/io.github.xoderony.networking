@@ -1,5 +1,5 @@
 using System;
-using System.Buffers.Binary;
+using System.Buffers;
 using System.Collections.Generic;
 using UnityEngine;
 using Xoderony.Networking.Messaging;
@@ -10,6 +10,7 @@ namespace Xoderony.Networking
     /// <summary>
     /// GameObject 上的网络身份。对等模型：生成者即拥有者（DA），id 见 <see cref="NetworkObjectId"/>。
     /// 契约见 <see cref="INetworkObject"/>。位姿在 <see cref="Awake"/> 登记一次，不随 Bind/Unbind 插拔。
+    /// 入网附加数据覆写 <see cref="Write"/> / <see cref="Read"/>，只走 Spawn 与晚加入，不参与 Flush。
     /// </summary>
     [DisallowMultipleComponent]
     public class NetworkObject : MonoBehaviour, INetworkObject
@@ -20,27 +21,20 @@ namespace Xoderony.Networking
         private const int ChannelCount = 256;
 
         private INetworkManager _networkManager;
-        private readonly byte[] _stateBuffer = new byte[StateEnvelopeCapacity];
         private readonly List<NetworkVariableBase> _variables = new List<NetworkVariableBase>();
         private readonly NetworkMessageHandler[] _handlers = new NetworkMessageHandler[ChannelCount];
+        [SerializeField] private int _prefabId;
 
         public NetworkObjectId Id { get; internal set; }
 
         public bool IsSpawned => _networkManager != null;
 
-        [SerializeField] private int _prefabId;
+        public bool IsOwner => IsSpawned && Id.PeerId == _networkManager.LocalPeerId;
 
         public int PrefabId
         {
             get => _prefabId;
             internal set => _prefabId = value;
-        }
-
-        public bool IsOwner => IsSpawned && Id.PeerId == _networkManager.LocalPeerId;
-
-        protected virtual void Awake()
-        {
-            _variables.Add(new PoseVariable(this));
         }
 
         public void Register(NetworkVariableBase variable)
@@ -71,7 +65,15 @@ namespace Xoderony.Networking
         public void SendToOthers(byte channel, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable)
         {
             Debug.Assert(IsSpawned, "Instance is not spawned.");
-            _networkManager.SendToOthers(NetworkMessageType.Rpc, WriteMessage(channel, payload.Written), delivery);
+            var buffer = ArrayPool<byte>.Shared.Rent(StateEnvelopeCapacity);
+            try
+            {
+                _networkManager.SendToOthers(NetworkMessageType.Rpc, WriteMessage(buffer, channel, payload.Written), delivery);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
 
         public void SendToAll(byte channel, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable)
@@ -83,7 +85,33 @@ namespace Xoderony.Networking
         public void SendToPeer(ulong peerId, byte channel, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable)
         {
             Debug.Assert(IsSpawned, "Instance is not spawned.");
-            _networkManager.SendToPeer(peerId, NetworkMessageType.Rpc, WriteMessage(channel, payload.Written), delivery);
+            var buffer = ArrayPool<byte>.Shared.Rent(StateEnvelopeCapacity);
+            try
+            {
+                _networkManager.SendToPeer(peerId, NetworkMessageType.Rpc, WriteMessage(buffer, channel, payload.Written), delivery);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        /// <summary>
+        /// 入网快照附加数据。仅 Spawn 与晚加入调用，不参与 <see cref="INetworkObjectManager.Flush"/>。
+        /// 写在状态变量列表之后，与其共享 <see cref="NetworkMessageLimits.StateDataCapacity"/>；成对读写相同字节数。
+        /// </summary>
+        protected virtual void Write(ref BufferWriter writer)
+        {
+        }
+
+        /// <summary>对应 <see cref="Write"/>。</summary>
+        protected virtual void Read(ref BufferReader reader)
+        {
+        }
+
+        protected virtual void Awake()
+        {
+            _variables.Add(new PoseVariable(transform));
         }
 
         internal void Bind(INetworkManager networkManager, in NetworkObjectId id)
@@ -110,51 +138,55 @@ namespace Xoderony.Networking
             for (var i = 0; i < _variables.Count; i++)
             {
                 var variable = _variables[i];
-                var lengthOffset = writer.DataLength;
-                writer.WriteUShort(0);
-                var payloadStart = writer.DataLength;
                 variable.Write(ref writer);
-                BinaryPrimitives.WriteUInt16LittleEndian(writer.Buffer[lengthOffset..], (ushort)(writer.DataLength - payloadStart));
                 variable.IsDirty = false;
             }
+
+            Write(ref writer);
+        }
+
+        internal void ApplySnapshot(ref BufferReader reader)
+        {
+            for (var i = 0; i < _variables.Count; i++)
+            {
+                _variables[i].Read(ref reader);
+            }
+
+            Read(ref reader);
         }
 
         internal void FlushDirty()
         {
-            for (var i = 0; i < _variables.Count; i++)
+            var buffer = ArrayPool<byte>.Shared.Rent(StateEnvelopeCapacity);
+            try
             {
-                var variable = _variables[i];
-                if (!variable.IsDirty)
+                for (var i = 0; i < _variables.Count; i++)
                 {
-                    continue;
+                    var variable = _variables[i];
+                    if (!variable.IsDirty)
+                    {
+                        continue;
+                    }
+
+                    var writer = new BufferWriter(buffer);
+                    writer.WriteUInt(Id.Sequence);
+                    writer.WriteByte((byte)i);
+                    variable.Write(ref writer);
+                    _networkManager.SendToOthers(NetworkMessageType.State, writer, NetworkDelivery.Reliable);
+                    variable.IsDirty = false;
                 }
-
-                var writer = new BufferWriter(_stateBuffer);
-                writer.WriteUInt(Id.Sequence);
-                writer.WriteByte((byte)i);
-                variable.Write(ref writer);
-                _networkManager.SendToOthers(NetworkMessageType.State, writer, NetworkDelivery.Reliable);
-                variable.IsDirty = false;
             }
-        }
-
-        internal void ApplySnapshot(BufferReader reader)
-        {
-            for (var i = 0; reader.Remaining > 0; i++)
+            finally
             {
-                var length = reader.ReadUShort();
-                var slice = reader.Buffer.Slice(reader.Position, length);
-                reader.Position += length;
-                Debug.Assert(i < _variables.Count, "Snapshot variable index is out of range.");
-                _variables[i].Read(new BufferReader(slice));
+                ArrayPool<byte>.Shared.Return(buffer);
             }
         }
 
-        internal void ReceiveState(BufferReader reader)
+        internal void ReceiveState(ref BufferReader reader)
         {
             var index = reader.ReadByte();
             Debug.Assert(index < _variables.Count, "State variable index is out of range.");
-            _variables[index].Read(reader);
+            _variables[index].Read(ref reader);
         }
 
         internal void ReceiveRpc(ulong senderPeerId, BufferReader reader)
@@ -163,9 +195,9 @@ namespace Xoderony.Networking
             _handlers[channel]?.Invoke(senderPeerId, reader);
         }
 
-        private BufferWriter WriteMessage(byte channel, ReadOnlySpan<byte> payload)
+        private BufferWriter WriteMessage(byte[] buffer, byte channel, ReadOnlySpan<byte> payload)
         {
-            var writer = new BufferWriter(_stateBuffer);
+            var writer = new BufferWriter(buffer);
             writer.WriteUInt(Id.Sequence);
             writer.WriteByte(channel);
             writer.WriteBytes(payload);
@@ -174,18 +206,16 @@ namespace Xoderony.Networking
 
         private sealed class PoseVariable : NetworkVariableBase
         {
-            private readonly NetworkObject _owner;
+            private readonly Transform _transform;
 
-            public PoseVariable(NetworkObject owner)
+            public PoseVariable(Transform transform)
             {
-                _owner = owner;
+                _transform = transform;
             }
 
             public override void Write(ref BufferWriter writer)
             {
-                var t = _owner.transform;
-                var position = t.position;
-                var rotation = t.rotation;
+                _transform.GetPositionAndRotation(out var position, out var rotation);
                 writer.WriteFloat(position.x);
                 writer.WriteFloat(position.y);
                 writer.WriteFloat(position.z);
@@ -195,11 +225,11 @@ namespace Xoderony.Networking
                 writer.WriteFloat(rotation.w);
             }
 
-            public override void Read(BufferReader reader)
+            public override void Read(ref BufferReader reader)
             {
                 var position = new Vector3(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
                 var rotation = new Quaternion(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
-                _owner.transform.SetPositionAndRotation(position, rotation);
+                _transform.SetPositionAndRotation(position, rotation);
             }
         }
     }

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Generic;
 using UnityEngine;
 using Xoderony.Networking.Messaging;
@@ -22,7 +23,6 @@ namespace Xoderony.Networking
         private readonly INetworkObjectFactory _factory;
         private readonly Dictionary<int, NetworkObject> _prefabs = new Dictionary<int, NetworkObject>();
         private readonly Dictionary<NetworkObjectId, NetworkObject> _objects = new Dictionary<NetworkObjectId, NetworkObject>();
-        private readonly byte[] _spawnBuffer = new byte[SpawnBufferCapacity];
         private uint _nextSequence = 1;
 
         public NetworkObjectManager(INetworkManager networkManager, INetworkObjectFactory factory)
@@ -63,7 +63,7 @@ namespace Xoderony.Networking
 
         /// <summary>
         /// 将调用方已创建的实例以本机为拥有者入网并广播。创建与初始字段由外部完成。
-        /// 快照由对象上的状态变量列表写入。
+        /// 快照为状态变量列表 + 对象 <c>Write</c>。
         /// </summary>
         public NetworkObject Spawn(NetworkObject instance)
         {
@@ -74,11 +74,16 @@ namespace Xoderony.Networking
             var id = new NetworkObjectId(_networkManager.LocalPeerId, _nextSequence++);
             SpawnLocal(id, instance);
 
-            var writer = new BufferWriter(_spawnBuffer);
-            writer.WriteUInt(id.Sequence);
-            writer.WriteInt(instance.PrefabId);
-            instance.WriteSnapshot(ref writer);
-            _networkManager.SendToOthers(NetworkMessageType.Spawn, writer, NetworkDelivery.Reliable);
+            var buffer = ArrayPool<byte>.Shared.Rent(SpawnBufferCapacity);
+            try
+            {
+                _networkManager.SendToOthers(NetworkMessageType.Spawn, WriteSpawn(buffer, instance), NetworkDelivery.Reliable);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
             return instance;
         }
 
@@ -87,9 +92,18 @@ namespace Xoderony.Networking
         {
             Debug.Assert(networkObject.IsOwner, "Only the owner can despawn a network object.");
 
-            var writer = new BufferWriter(_spawnBuffer);
-            writer.WriteUInt(networkObject.Id.Sequence);
-            _networkManager.SendToOthers(NetworkMessageType.Despawn, writer, NetworkDelivery.Reliable);
+            var buffer = ArrayPool<byte>.Shared.Rent(SpawnBufferCapacity);
+            try
+            {
+                var writer = new BufferWriter(buffer);
+                writer.WriteUInt(networkObject.Id.Sequence);
+                _networkManager.SendToOthers(NetworkMessageType.Despawn, writer, NetworkDelivery.Reliable);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
             DestroyLocal(networkObject.Id);
         }
 
@@ -138,19 +152,23 @@ namespace Xoderony.Networking
 
         private void OnPeerJoined(ulong peerId)
         {
-            foreach (var pair in _objects)
+            var buffer = ArrayPool<byte>.Shared.Rent(SpawnBufferCapacity);
+            try
             {
-                var networkObject = pair.Value;
-                if (networkObject.Id.PeerId != _networkManager.LocalPeerId)
+                foreach (var pair in _objects)
                 {
-                    continue;
-                }
+                    var networkObject = pair.Value;
+                    if (networkObject.Id.PeerId != _networkManager.LocalPeerId)
+                    {
+                        continue;
+                    }
 
-                var writer = new BufferWriter(_spawnBuffer);
-                writer.WriteUInt(networkObject.Id.Sequence);
-                writer.WriteInt(networkObject.PrefabId);
-                networkObject.WriteSnapshot(ref writer);
-                _networkManager.SendToPeer(peerId, NetworkMessageType.Spawn, writer, NetworkDelivery.Reliable);
+                    _networkManager.SendToPeer(peerId, NetworkMessageType.Spawn, WriteSpawn(buffer, networkObject), NetworkDelivery.Reliable);
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
             }
         }
 
@@ -182,7 +200,7 @@ namespace Xoderony.Networking
 
             var instance = _factory.Create(prefab);
             SpawnLocal(id, instance);
-            instance.ApplySnapshot(reader);
+            instance.ApplySnapshot(ref reader);
         }
 
         private void OnDespawnMessage(ulong senderPeerId, BufferReader reader)
@@ -198,7 +216,7 @@ namespace Xoderony.Networking
                 return;
             }
 
-            networkObject.ReceiveState(reader);
+            networkObject.ReceiveState(ref reader);
         }
 
         private void OnRpcMessage(ulong senderPeerId, BufferReader reader)
@@ -210,6 +228,15 @@ namespace Xoderony.Networking
             }
 
             networkObject.ReceiveRpc(senderPeerId, reader);
+        }
+
+        private static BufferWriter WriteSpawn(byte[] buffer, NetworkObject networkObject)
+        {
+            var writer = new BufferWriter(buffer);
+            writer.WriteUInt(networkObject.Id.Sequence);
+            writer.WriteInt(networkObject.PrefabId);
+            networkObject.WriteSnapshot(ref writer);
+            return writer;
         }
 
         private void SpawnLocal(in NetworkObjectId id, NetworkObject instance)
