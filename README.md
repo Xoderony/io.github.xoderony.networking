@@ -59,7 +59,7 @@ Application messages: register on `networkManager.CustomMessaging` with types `>
 
 | Namespace | Types |
 |-----------|--------|
-| `Xoderony.Networking` | `NetworkManager`, `NetworkObject`, `NetworkSpawnManager`, `BufferWriter`, `BufferReader` |
+| `Xoderony.Networking` | `NetworkManager`, `INetworkManager`, `NetworkObject`, `NetworkObjectManager`, `INetworkObjectManager`, `INetworkObjectFactory`, `BufferWriter`, `BufferReader` |
 | `Xoderony.Networking.Transport` | `INetworkTransport`, `LoopbackTransport`, `NetworkDelivery` |
 | `Xoderony.Networking.Messaging` | `NetworkMessageType` |
 

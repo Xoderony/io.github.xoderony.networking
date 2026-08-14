@@ -1,4 +1,6 @@
 using System;
+using System.Buffers.Binary;
+using System.Collections.Generic;
 using UnityEngine;
 using Xoderony.Networking.Messaging;
 using Xoderony.Networking.Transport;
@@ -7,87 +9,198 @@ namespace Xoderony.Networking
 {
     /// <summary>
     /// GameObject 上的网络身份。对等模型：生成者即拥有者（DA），id 见 <see cref="NetworkObjectId"/>。
-    /// 拥有者可推送状态（<see cref="SendState"/>），远端经 <see cref="OnNetworkState"/> 接收。
+    /// 契约见 <see cref="INetworkObject"/>。位姿在 <see cref="Awake"/> 登记一次，不随 Bind/Unbind 插拔。
     /// </summary>
     [DisallowMultipleComponent]
-    public class NetworkObject : MonoBehaviour
+    public class NetworkObject : MonoBehaviour, INetworkObject
     {
-        /// <summary>状态信封容量：LocalId + 状态数据（上限见 <see cref="NetworkMessageLimits.StateDataCapacity"/>）。</summary>
-        private const int StateEnvelopeCapacity = sizeof(uint) + NetworkMessageLimits.StateDataCapacity;
+        /// <summary>信封容量：Sequence + 下标/通道 + 数据（上限见 <see cref="NetworkMessageLimits.StateDataCapacity"/>）。</summary>
+        private const int StateEnvelopeCapacity = sizeof(uint) + sizeof(byte) + NetworkMessageLimits.StateDataCapacity;
 
-        private NetworkManager _networkManager;
+        private const int ChannelCount = 256;
+
+        private INetworkManager _networkManager;
         private readonly byte[] _stateBuffer = new byte[StateEnvelopeCapacity];
+        private readonly List<NetworkVariableBase> _variables = new List<NetworkVariableBase>();
+        private readonly NetworkMessageHandler[] _handlers = new NetworkMessageHandler[ChannelCount];
 
-        /// <summary>全局唯一 id，由生成端派生。</summary>
         public NetworkObjectId Id { get; internal set; }
 
-        /// <summary>拥有该对象的对等端 id（DA：恒等于 <see cref="Id"/>.PeerId）。</summary>
-        public ulong OwnerPeerId => Id.PeerId;
+        public bool IsSpawned => _networkManager != null;
 
-        /// <summary>是否已生成（Bind 后为 true，Unbind 后为 false）。</summary>
-        public bool IsSpawned { get; internal set; }
+        [SerializeField] private int _prefabId;
 
-        /// <summary>生成所用的 prefab id。</summary>
-        public ushort PrefabId { get; internal set; }
+        public int PrefabId
+        {
+            get => _prefabId;
+            internal set => _prefabId = value;
+        }
 
-        /// <summary>绑定会话（生成时由 SpawnManager 设置）。</summary>
-        public NetworkManager NetworkManager => _networkManager;
+        public bool IsOwner => IsSpawned && Id.PeerId == _networkManager.LocalPeerId;
 
-        /// <summary>本机是否拥有该对象。</summary>
-        public bool IsOwner => IsSpawned && _networkManager != null && Id.PeerId == _networkManager.LocalPeerId;
+        protected virtual void Awake()
+        {
+            _variables.Add(new PoseVariable(this));
+        }
 
-        internal void Bind(NetworkManager networkManager, NetworkObjectId id, ushort prefabId)
+        public void Register(NetworkVariableBase variable)
+        {
+            Debug.Assert(!_variables.Contains(variable), "Variable is already registered.");
+            Debug.Assert(_variables.Count < ChannelCount, "Too many network variables.");
+            _variables.Add(variable);
+        }
+
+        public void Register(byte channel, NetworkMessageHandler handler)
+        {
+            _handlers[channel] += handler;
+        }
+
+        public void Unregister(NetworkVariableBase variable)
+        {
+            var index = _variables.IndexOf(variable);
+            Debug.Assert(index >= 0, "Variable is not registered.");
+            _variables.RemoveAt(index);
+            variable.IsDirty = false;
+        }
+
+        public void Unregister(byte channel, NetworkMessageHandler handler)
+        {
+            _handlers[channel] -= handler;
+        }
+
+        public void SendToOthers(byte channel, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable)
+        {
+            Debug.Assert(IsSpawned, "Instance is not spawned.");
+            _networkManager.SendToOthers(NetworkMessageType.Rpc, WriteMessage(channel, payload.Written), delivery);
+        }
+
+        public void SendToAll(byte channel, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable)
+        {
+            SendToOthers(channel, payload, delivery);
+            _handlers[channel]?.Invoke(_networkManager.LocalPeerId, new BufferReader(payload.Written));
+        }
+
+        public void SendToPeer(ulong peerId, byte channel, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable)
+        {
+            Debug.Assert(IsSpawned, "Instance is not spawned.");
+            _networkManager.SendToPeer(peerId, NetworkMessageType.Rpc, WriteMessage(channel, payload.Written), delivery);
+        }
+
+        internal void Bind(INetworkManager networkManager, in NetworkObjectId id)
         {
             _networkManager = networkManager;
             Id = id;
-            PrefabId = prefabId;
-            IsSpawned = true;
-            OnNetworkSpawn();
         }
 
         internal void Unbind()
         {
-            if (!IsSpawned)
+            Debug.Assert(IsSpawned, "Instance is not spawned.");
+
+            for (var i = 0; i < _variables.Count; i++)
             {
-                return;
+                _variables[i].IsDirty = false;
             }
 
-            OnNetworkDespawn();
-            IsSpawned = false;
             _networkManager = null;
             Id = default;
         }
 
-        internal void ReceiveState(ReadOnlySpan<byte> payload)
+        internal void WriteSnapshot(ref BufferWriter writer)
         {
-            OnNetworkState(payload);
+            for (var i = 0; i < _variables.Count; i++)
+            {
+                var variable = _variables[i];
+                var lengthOffset = writer.DataLength;
+                writer.WriteUShort(0);
+                var payloadStart = writer.DataLength;
+                variable.Write(ref writer);
+                BinaryPrimitives.WriteUInt16LittleEndian(writer.Buffer[lengthOffset..], (ushort)(writer.DataLength - payloadStart));
+                variable.IsDirty = false;
+            }
         }
 
-        /// <summary>
-        /// 推送本对象状态给所有对端。仅拥有者可调用；状态数据上限见
-        /// <see cref="NetworkMessageLimits.StateDataCapacity"/>，超出时由固定容量缓冲直接暴露。
-        /// </summary>
-        public void SendState(BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable)
+        internal void FlushDirty()
         {
-            Debug.Assert(IsOwner, "Only the owner can send entity state.");
+            for (var i = 0; i < _variables.Count; i++)
+            {
+                var variable = _variables[i];
+                if (!variable.IsDirty)
+                {
+                    continue;
+                }
 
+                var writer = new BufferWriter(_stateBuffer);
+                writer.WriteUInt(Id.Sequence);
+                writer.WriteByte((byte)i);
+                variable.Write(ref writer);
+                _networkManager.SendToOthers(NetworkMessageType.State, writer, NetworkDelivery.Reliable);
+                variable.IsDirty = false;
+            }
+        }
+
+        internal void ApplySnapshot(BufferReader reader)
+        {
+            for (var i = 0; reader.Remaining > 0; i++)
+            {
+                var length = reader.ReadUShort();
+                var slice = reader.Buffer.Slice(reader.Position, length);
+                reader.Position += length;
+                Debug.Assert(i < _variables.Count, "Snapshot variable index is out of range.");
+                _variables[i].Read(new BufferReader(slice));
+            }
+        }
+
+        internal void ReceiveState(BufferReader reader)
+        {
+            var index = reader.ReadByte();
+            Debug.Assert(index < _variables.Count, "State variable index is out of range.");
+            _variables[index].Read(reader);
+        }
+
+        internal void ReceiveRpc(ulong senderPeerId, BufferReader reader)
+        {
+            var channel = reader.ReadByte();
+            _handlers[channel]?.Invoke(senderPeerId, reader);
+        }
+
+        private BufferWriter WriteMessage(byte channel, ReadOnlySpan<byte> payload)
+        {
             var writer = new BufferWriter(_stateBuffer);
-            writer.WriteUInt(Id.LocalId);
-            writer.WriteBytes(payload.Written);
-            _networkManager.SendToOthers(NetworkMessageType.EntityState, writer, delivery);
+            writer.WriteUInt(Id.Sequence);
+            writer.WriteByte(channel);
+            writer.WriteBytes(payload);
+            return writer;
         }
 
-        protected virtual void OnNetworkSpawn()
+        private sealed class PoseVariable : NetworkVariableBase
         {
-        }
+            private readonly NetworkObject _owner;
 
-        protected virtual void OnNetworkDespawn()
-        {
-        }
+            public PoseVariable(NetworkObject owner)
+            {
+                _owner = owner;
+            }
 
-        /// <summary>接收拥有者推送的状态；payload 仅在调用期间有效。</summary>
-        protected virtual void OnNetworkState(ReadOnlySpan<byte> payload)
-        {
+            public override void Write(ref BufferWriter writer)
+            {
+                var t = _owner.transform;
+                var position = t.position;
+                var rotation = t.rotation;
+                writer.WriteFloat(position.x);
+                writer.WriteFloat(position.y);
+                writer.WriteFloat(position.z);
+                writer.WriteFloat(rotation.x);
+                writer.WriteFloat(rotation.y);
+                writer.WriteFloat(rotation.z);
+                writer.WriteFloat(rotation.w);
+            }
+
+            public override void Read(BufferReader reader)
+            {
+                var position = new Vector3(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
+                var rotation = new Quaternion(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
+                _owner.transform.SetPositionAndRotation(position, rotation);
+            }
         }
     }
 }
