@@ -1,12 +1,8 @@
-using Xoderony.Networking.Transport;
-
 namespace Xoderony.Networking
 {
     /// <summary>
-    /// 单个网络对象：状态变量列表 + RPC 通道。
-    /// 状态用 <see cref="Register(NetworkVariableBase)"/> 登记，<see cref="NetworkVariableBase.IsDirty"/> 一帧内多次置位只在 <see cref="INetworkObjectManager.Flush"/> 时发最终值。
-    /// Spawn / 晚加入快照在变量列表之后写附加数据（实现侧 <c>Write</c>/<c>Read</c>），不参与 Flush。
-    /// RPC 用 <see cref="Register(byte, NetworkMessageHandler)"/> 登记通道，<see cref="SendToOthers"/> 每次立即发送。
+    /// 单个网络对象的身份与会话状态。
+    /// 公开契约视图：与 <see cref="NetworkObject"/> 的公开成员保持同步，类新增公开成员时同步补进接口。
     /// </summary>
     public interface INetworkObject
     {
@@ -16,18 +12,6 @@ namespace Xoderony.Networking
 
         bool IsOwner { get; }
 
-        void Register(NetworkVariableBase variable);
-
-        void Register(byte channel, NetworkMessageHandler handler);
-
-        void Unregister(NetworkVariableBase variable);
-
-        void Unregister(byte channel, NetworkMessageHandler handler);
-
-        void SendToOthers(byte channel, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable);
-
-        void SendToAll(byte channel, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable);
-
-        void SendToPeer(ulong peerId, byte channel, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable);
+        int PrefabId { get; }
     }
 }

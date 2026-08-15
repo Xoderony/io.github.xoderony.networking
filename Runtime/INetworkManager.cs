@@ -1,4 +1,5 @@
 using System;
+using Xoderony.Networking.Messaging;
 using Xoderony.Networking.Transport;
 
 namespace Xoderony.Networking
@@ -46,13 +47,13 @@ namespace Xoderony.Networking
         void UnregisterMessage(byte messageType, NetworkMessageHandler handler);
 
         /// <summary>发送给所有已连接对端（网格直发）。</summary>
-        void SendToOthers(byte messageType, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable);
+        void SendToOthers(byte messageType, ReadOnlySpan<byte> payload, NetworkDelivery delivery = NetworkDelivery.Reliable);
 
         /// <summary>广播给所有已连接对端并本地投递（本地回显走同一 handler）。</summary>
-        void SendToAll(byte messageType, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable);
+        void SendToAll(byte messageType, ReadOnlySpan<byte> payload, NetworkDelivery delivery = NetworkDelivery.Reliable);
 
         /// <summary>定向发送给指定对端（需已建立连接）。</summary>
-        void SendToPeer(ulong peerId, byte messageType, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable);
+        void SendToPeer(ulong peerId, byte messageType, ReadOnlySpan<byte> payload, NetworkDelivery delivery = NetworkDelivery.Reliable);
 
         /// <summary>建立到指定对端（SteamID）的直连。</summary>
         bool ConnectPeer(ulong peerId);

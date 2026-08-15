@@ -2,12 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Xoderony.Networking.Messaging;
+using Xoderony.Networking.Serialization;
 using Xoderony.Networking.Transport;
 
 namespace Xoderony.Networking {
-    /// <summary>网络消息处理委托。</summary>
-    public delegate void NetworkMessageHandler(ulong senderPeerId, BufferReader reader);
-
     /// <summary>
     /// 对等会话实现：构造注入传输、启动/停止、消息协议与网格直发。
     /// 无服务器/客户端之分：所有对端平等，PeerId 即传输端 id（Steam 下为 SteamID）。
@@ -79,8 +77,8 @@ namespace Xoderony.Networking {
             _handlers[messageType] -= handler;
         }
 
-        public void SendToOthers(byte messageType, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable) {
-            var envelope = BuildEnvelope(messageType, LocalPeerId, payload.Written);
+        public void SendToOthers(byte messageType, ReadOnlySpan<byte> payload, NetworkDelivery delivery = NetworkDelivery.Reliable) {
+            var envelope = BuildEnvelope(messageType, LocalPeerId, payload);
             foreach (var peerId in _peers) {
                 _transport.SendData(peerId, envelope, delivery);
             }
@@ -89,13 +87,13 @@ namespace Xoderony.Networking {
         /// <summary>
         /// 先发对端再本地回显：保证本条消息先于本地 handler 派生的后续消息到达对端（Reliable 有序下）。
         /// </summary>
-        public void SendToAll(byte messageType, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable) {
+        public void SendToAll(byte messageType, ReadOnlySpan<byte> payload, NetworkDelivery delivery = NetworkDelivery.Reliable) {
             SendToOthers(messageType, payload, delivery);
-            _handlers[messageType]?.Invoke(LocalPeerId, new BufferReader(payload.Written));
+            _handlers[messageType]?.Invoke(LocalPeerId, new BufferReader(payload));
         }
 
-        public void SendToPeer(ulong peerId, byte messageType, in BufferWriter payload, NetworkDelivery delivery = NetworkDelivery.Reliable) {
-            var envelope = BuildEnvelope(messageType, LocalPeerId, payload.Written);
+        public void SendToPeer(ulong peerId, byte messageType, ReadOnlySpan<byte> payload, NetworkDelivery delivery = NetworkDelivery.Reliable) {
+            var envelope = BuildEnvelope(messageType, LocalPeerId, payload);
             _transport.SendData(peerId, envelope, delivery);
         }
 

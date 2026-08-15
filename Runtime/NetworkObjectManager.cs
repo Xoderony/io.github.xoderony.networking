@@ -1,29 +1,32 @@
+using System;
 using System.Buffers;
 using System.Collections.Generic;
 using UnityEngine;
 using Xoderony.Networking.Messaging;
+using Xoderony.Networking.Serialization;
 using Xoderony.Networking.Transport;
 
 namespace Xoderony.Networking
 {
     /// <summary>
-    /// 对等会话中的网络对象复制：本端派生 id 并广播生成/销毁，投递对象通道，
-    /// 新对等端加入时补发本端对象（含当前状态），对等端离开或会话停止时清理。
+    /// 对等会话中的网络对象生命周期：本端派生 id 并广播生成/销毁，
+    /// 新对等端加入时补发本端对象（含派生对象快照），对等端离开或会话停止时清理。
     /// 构造订阅会话启停；启动时接入协议，停止时注销协议并清理本地对象。
     /// </summary>
-    public sealed class NetworkObjectManager : INetworkObjectManager
+    public sealed class NetworkObjectManager : INetworkObjectManager, INetworkObjectEvents, INetworkObjectResolver
     {
         /// <summary>Spawn 固定头：Sequence + PrefabId。</summary>
-        private const int SpawnHeaderSize = sizeof(uint) + sizeof(int);
-
-        /// <summary>Spawn 写入容量：固定头 + 对象当前状态。</summary>
-        private const int SpawnBufferCapacity = SpawnHeaderSize + NetworkMessageLimits.StateDataCapacity;
-
         private readonly INetworkManager _networkManager;
         private readonly INetworkObjectFactory _factory;
         private readonly Dictionary<int, NetworkObject> _prefabs = new Dictionary<int, NetworkObject>();
         private readonly Dictionary<NetworkObjectId, NetworkObject> _objects = new Dictionary<NetworkObjectId, NetworkObject>();
         private uint _nextSequence = 1;
+
+        internal ulong LocalPeerId => _networkManager.LocalPeerId;
+
+        public event Action<NetworkObject> Spawned;
+
+        public event Action<NetworkObject> Despawning;
 
         public NetworkObjectManager(INetworkManager networkManager, INetworkObjectFactory factory)
         {
@@ -63,7 +66,7 @@ namespace Xoderony.Networking
 
         /// <summary>
         /// 将调用方已创建的实例以本机为拥有者入网并广播。创建与初始字段由外部完成。
-        /// 快照为状态变量列表 + 对象 <c>Write</c>。
+        /// 初始快照由对象 <c>OnSerializeSnapshot</c> 提供。
         /// </summary>
         public NetworkObject Spawn(NetworkObject instance)
         {
@@ -74,7 +77,7 @@ namespace Xoderony.Networking
             var id = new NetworkObjectId(_networkManager.LocalPeerId, _nextSequence++);
             SpawnLocal(id, instance);
 
-            var buffer = ArrayPool<byte>.Shared.Rent(SpawnBufferCapacity);
+            var buffer = ArrayPool<byte>.Shared.Rent(NetworkMessageLimits.PayloadCapacity);
             try
             {
                 _networkManager.SendToOthers(NetworkMessageType.Spawn, WriteSpawn(buffer, instance), NetworkDelivery.Reliable);
@@ -84,6 +87,7 @@ namespace Xoderony.Networking
                 ArrayPool<byte>.Shared.Return(buffer);
             }
 
+            Spawned?.Invoke(instance);
             return instance;
         }
 
@@ -92,12 +96,12 @@ namespace Xoderony.Networking
         {
             Debug.Assert(networkObject.IsOwner, "Only the owner can despawn a network object.");
 
-            var buffer = ArrayPool<byte>.Shared.Rent(SpawnBufferCapacity);
+            var buffer = ArrayPool<byte>.Shared.Rent(NetworkMessageLimits.PayloadCapacity);
             try
             {
                 var writer = new BufferWriter(buffer);
                 writer.WriteUInt(networkObject.Id.Sequence);
-                _networkManager.SendToOthers(NetworkMessageType.Despawn, writer, NetworkDelivery.Reliable);
+                _networkManager.SendToOthers(NetworkMessageType.Despawn, writer.Written, NetworkDelivery.Reliable);
             }
             finally
             {
@@ -107,26 +111,10 @@ namespace Xoderony.Networking
             DestroyLocal(networkObject.Id);
         }
 
-        public void Flush()
-        {
-            foreach (var pair in _objects)
-            {
-                var networkObject = pair.Value;
-                if (networkObject.Id.PeerId != _networkManager.LocalPeerId)
-                {
-                    continue;
-                }
-
-                networkObject.FlushDirty();
-            }
-        }
-
         private void OnSessionStarted()
         {
             _networkManager.RegisterMessage(NetworkMessageType.Spawn, OnSpawnMessage);
             _networkManager.RegisterMessage(NetworkMessageType.Despawn, OnDespawnMessage);
-            _networkManager.RegisterMessage(NetworkMessageType.State, OnStateMessage);
-            _networkManager.RegisterMessage(NetworkMessageType.Rpc, OnRpcMessage);
             _networkManager.PeerJoined += OnPeerJoined;
             _networkManager.PeerLeft += OnPeerLeft;
         }
@@ -135,15 +123,15 @@ namespace Xoderony.Networking
         {
             _networkManager.UnregisterMessage(NetworkMessageType.Spawn, OnSpawnMessage);
             _networkManager.UnregisterMessage(NetworkMessageType.Despawn, OnDespawnMessage);
-            _networkManager.UnregisterMessage(NetworkMessageType.State, OnStateMessage);
-            _networkManager.UnregisterMessage(NetworkMessageType.Rpc, OnRpcMessage);
             _networkManager.PeerJoined -= OnPeerJoined;
             _networkManager.PeerLeft -= OnPeerLeft;
 
             foreach (var pair in _objects)
             {
-                pair.Value.Unbind();
-                _factory.Destroy(pair.Value);
+                var networkObject = pair.Value;
+                Despawning?.Invoke(networkObject);
+                networkObject.Unbind();
+                _factory.Destroy(networkObject);
             }
 
             _objects.Clear();
@@ -152,7 +140,7 @@ namespace Xoderony.Networking
 
         private void OnPeerJoined(ulong peerId)
         {
-            var buffer = ArrayPool<byte>.Shared.Rent(SpawnBufferCapacity);
+            var buffer = ArrayPool<byte>.Shared.Rent(NetworkMessageLimits.PayloadCapacity);
             try
             {
                 foreach (var pair in _objects)
@@ -200,7 +188,8 @@ namespace Xoderony.Networking
 
             var instance = _factory.Create(prefab);
             SpawnLocal(id, instance);
-            instance.ApplySnapshot(ref reader);
+            instance.DeserializeSnapshot(ref reader);
+            Spawned?.Invoke(instance);
         }
 
         private void OnDespawnMessage(ulong senderPeerId, BufferReader reader)
@@ -208,50 +197,30 @@ namespace Xoderony.Networking
             DestroyLocal(new NetworkObjectId(senderPeerId, reader.ReadUInt()));
         }
 
-        private void OnStateMessage(ulong senderPeerId, BufferReader reader)
-        {
-            var id = new NetworkObjectId(senderPeerId, reader.ReadUInt());
-            if (!_objects.TryGetValue(id, out var networkObject))
-            {
-                return;
-            }
-
-            networkObject.ReceiveState(ref reader);
-        }
-
-        private void OnRpcMessage(ulong senderPeerId, BufferReader reader)
-        {
-            var id = new NetworkObjectId(senderPeerId, reader.ReadUInt());
-            if (!_objects.TryGetValue(id, out var networkObject))
-            {
-                return;
-            }
-
-            networkObject.ReceiveRpc(senderPeerId, reader);
-        }
-
-        private static BufferWriter WriteSpawn(byte[] buffer, NetworkObject networkObject)
+        private static ReadOnlySpan<byte> WriteSpawn(byte[] buffer, NetworkObject networkObject)
         {
             var writer = new BufferWriter(buffer);
             writer.WriteUInt(networkObject.Id.Sequence);
             writer.WriteInt(networkObject.PrefabId);
-            networkObject.WriteSnapshot(ref writer);
-            return writer;
+            networkObject.SerializeSnapshot(ref writer);
+            return writer.Written;
         }
 
         private void SpawnLocal(in NetworkObjectId id, NetworkObject instance)
         {
-            instance.Bind(_networkManager, id);
+            instance.Bind(this, id);
             _objects[id] = instance;
         }
 
         private void DestroyLocal(in NetworkObjectId id)
         {
-            if (!_objects.Remove(id, out var networkObject))
+            if (!_objects.TryGetValue(id, out var networkObject))
             {
                 return;
             }
 
+            Despawning?.Invoke(networkObject);
+            _objects.Remove(id);
             networkObject.Unbind();
             _factory.Destroy(networkObject);
         }

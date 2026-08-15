@@ -1,70 +1,47 @@
 using UnityEngine;
+using Xoderony.Networking.Serialization;
 
 namespace Xoderony.Networking.Samples
 {
-    using BufferReader = Xoderony.Networking.BufferReader;
-    using BufferWriter = Xoderony.Networking.BufferWriter;
     using NetworkObject = Xoderony.Networking.NetworkObject;
 
-    /// <summary>拥有者改颜色后经状态变量推送；变量进入快照。</summary>
+    /// <summary>派生对象快照示例；LoopbackTransport 当前仍是空壳。</summary>
     public sealed class DemoCube : NetworkObject
     {
         private Renderer _renderer;
         private Color _color = Color.white;
-        private ColorVariable _colorVariable;
 
-        protected override void Awake()
+        private void Awake()
         {
-            base.Awake();
             _renderer = GetComponent<Renderer>();
-            _colorVariable = new ColorVariable(this);
-            Register(_colorVariable);
+            ApplyColor(_color);
         }
 
-        private void OnDestroy()
+        public void SetColor(Color color)
         {
-            Unregister(_colorVariable);
-        }
-
-        public void SetColorAndSync(Color color)
-        {
+            _color = color;
             ApplyColor(color);
-            if (IsOwner)
-            {
-                _colorVariable.IsDirty = true;
-            }
+        }
+
+        protected override void OnSerializeSnapshot(ref BufferWriter writer)
+        {
+            writer.WriteFloat(_color.r);
+            writer.WriteFloat(_color.g);
+            writer.WriteFloat(_color.b);
+            writer.WriteFloat(_color.a);
+        }
+
+        protected override void OnDeserializeSnapshot(ref BufferReader reader)
+        {
+            _color = new Color(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
+            ApplyColor(_color);
         }
 
         private void ApplyColor(Color color)
         {
-            _color = color;
             if (_renderer != null)
             {
                 _renderer.material.color = color;
-            }
-        }
-
-        private sealed class ColorVariable : NetworkVariableBase
-        {
-            private readonly DemoCube _owner;
-
-            public ColorVariable(DemoCube owner)
-            {
-                _owner = owner;
-            }
-
-            public override void Write(ref BufferWriter writer)
-            {
-                var color = _owner._color;
-                writer.WriteFloat(color.r);
-                writer.WriteFloat(color.g);
-                writer.WriteFloat(color.b);
-                writer.WriteFloat(color.a);
-            }
-
-            public override void Read(ref BufferReader reader)
-            {
-                _owner.ApplyColor(new Color(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat()));
             }
         }
     }

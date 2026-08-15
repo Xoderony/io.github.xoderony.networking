@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace Xoderony.Networking {
+namespace Xoderony.Networking.Serialization {
     /// <summary>
     /// 1 字节位重解释：bool 与 byte 互转（bool 变量恒为 0/1，写侧安全）。
     /// </summary>

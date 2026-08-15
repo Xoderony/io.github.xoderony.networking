@@ -1,101 +1,14 @@
 using UnityEngine;
-using Xoderony.Networking.Transport;
 
 namespace Xoderony.Networking.Samples
 {
-    using NetworkManager = Xoderony.Networking.NetworkManager;
-
-    /// <summary>
-    /// Spins up Host + Client in one process via <see cref="LoopbackTransport"/>.
-    /// Attach to an empty scene object; assign a <see cref="DemoCube"/> prefab with a Renderer.
-    /// </summary>
+    /// <summary>LoopbackTransport 尚未实现；当前样例仅保留对象快照结构。</summary>
     public sealed class LoopbackDemoBootstrap : MonoBehaviour
     {
-        private const string RoomName = "loopback-demo";
-        private const ushort CubePrefabId = 1;
-
-        [SerializeField]
-        private DemoCube _cubePrefab;
-
-        private NetworkManager _host;
-        private NetworkManager _client;
-        private DemoCube _hostCube;
-        private float _nextPaintTime;
-
         private void Start()
         {
-            if (_cubePrefab == null)
-            {
-                Debug.LogError("LoopbackDemoBootstrap: assign a DemoCube prefab.");
-                enabled = false;
-                return;
-            }
-
-            _host = CreateManager("Host");
-            _host.BindTransport(new LoopbackTransport(RoomName));
-            _host.StartHost();
-            _host.SpawnManager.RegisterPrefab(CubePrefabId, _cubePrefab);
-
-            _client = CreateManager("Client");
-            _client.BindTransport(new LoopbackTransport(RoomName));
-            _client.Connected += OnClientConnected;
-            _client.SpawnManager.RegisterPrefab(CubePrefabId, _cubePrefab);
-            _client.StartClient(LoopbackTransport.RoomAddress(RoomName));
-        }
-
-        private void OnClientConnected()
-        {
-            _hostCube = (DemoCube)_host.SpawnManager.Spawn(
-                CubePrefabId,
-                _client.LocalClientId,
-                Vector3.zero,
-                Quaternion.identity);
-            _hostCube.SetColorAndSync(Color.cyan);
-
-            _nextPaintTime = Time.time + 1f;
-        }
-
-        private void Update()
-        {
-            if (_hostCube == null || Time.time < _nextPaintTime)
-            {
-                return;
-            }
-
-            _nextPaintTime = Time.time + 1.5f;
-            if (!_client.SpawnManager.SpawnedObjects.TryGetValue(_hostCube.NetworkObjectId, out var remote))
-            {
-                return;
-            }
-
-            var cube = (DemoCube)remote;
-            if (!cube.IsOwner)
-            {
-                return;
-            }
-
-            var color = Color.HSVToRGB(Random.value, 0.7f, 1f);
-            cube.SetColorAndSync(color);
-        }
-
-        private void OnDestroy()
-        {
-            if (_client != null)
-            {
-                _client.Connected -= OnClientConnected;
-                _client.Shutdown();
-            }
-
-            if (_host != null)
-            {
-                _host.Shutdown();
-            }
-        }
-
-        private static NetworkManager CreateManager(string name)
-        {
-            var go = new GameObject($"NetworkManager-{name}");
-            return go.AddComponent<NetworkManager>();
+            Debug.LogWarning("LoopbackDemoBootstrap is disabled because LoopbackTransport is a placeholder.");
+            enabled = false;
         }
     }
 }

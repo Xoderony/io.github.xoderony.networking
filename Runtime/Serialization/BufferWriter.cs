@@ -2,7 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 
-namespace Xoderony.Networking {
+namespace Xoderony.Networking.Serialization {
     public ref struct BufferWriter {
         public Span<byte> Buffer;
         public int DataLength;
@@ -23,6 +23,17 @@ namespace Xoderony.Networking {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public readonly bool CanWrite(int count) {
             return DataLength + count <= Buffer.Length;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe void WriteUnmanaged<T>(in T value) where T : unmanaged {
+            var size = sizeof(T);
+            fixed (byte* destination = Buffer)
+            fixed (T* source = &value) {
+                System.Buffer.MemoryCopy(source, destination + DataLength, size, size);
+            }
+
+            DataLength += size;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

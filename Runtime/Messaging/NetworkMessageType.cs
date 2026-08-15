@@ -8,8 +8,6 @@ namespace Xoderony.Networking.Messaging
     {
         public const byte Spawn = 2;
         public const byte Despawn = 3;
-        public const byte State = 4;
-        public const byte Rpc = 5;
 
         /// <summary>应用消息的起始类型。</summary>
         public const byte User = 32;

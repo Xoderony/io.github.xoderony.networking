@@ -2,7 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 
-namespace Xoderony.Networking {
+namespace Xoderony.Networking.Serialization {
     public ref struct BufferReader {
         public ReadOnlySpan<byte> Buffer;
         public int Position;
@@ -20,6 +20,18 @@ namespace Xoderony.Networking {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public readonly bool CanRead(int count) {
             return Position + count <= Buffer.Length;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe T ReadUnmanaged<T>() where T : unmanaged {
+            var size = sizeof(T);
+            T value = default;
+            fixed (byte* source = Buffer) {
+                System.Buffer.MemoryCopy(source + Position, &value, size, size);
+            }
+
+            Position += size;
+            return value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
