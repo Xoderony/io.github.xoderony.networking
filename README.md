@@ -2,7 +2,7 @@
 
 Lightweight Unity networking core for peer-to-peer Distributed Authority:
 
-- Transport-neutral peer sessions and byte message routing
+- Transport-neutral session facts and byte message routing
 - Network object identity, Spawn/Despawn, prefab lookup and late-join snapshots
 - Explicit lifecycle and resolver contracts for project-owned extensions
 - Buffer and unmanaged serialization primitives
@@ -26,20 +26,31 @@ using Xoderony.Networking.Serialization;
 using Xoderony.Networking.Transport;
 
 INetworkTransport transport = CreateTransport();
-var networkManager = new NetworkManager(transport);
+INetworkSession session = CreateSession();
+var messageManager = new NetworkMessageManager(transport);
+INetworkObjectIdAllocator idAllocator = CreateObjectIdAllocator();
 var objectFactory = new InstantiateNetworkObjectFactory();
-var objectManager = new NetworkObjectManager(networkManager, objectFactory);
+var objectManager = new NetworkObjectManager(transport, session, messageManager, idAllocator, objectFactory);
 
 objectManager.RegisterPrefab(prefab);
-networkManager.Start();
+transport.Start();
+
+var instance = objectManager.Spawn(prefab, instance =>
+{
+    // Initialize project state before the initial snapshot is serialized.
+});
 ```
 
 The caller owns the update and shutdown lifecycle:
 
 ```csharp
-networkManager.Poll();
-networkManager.Stop();
+transport.Poll();
+transport.Stop();
+objectManager.Dispose();
+messageManager.Dispose();
 ```
+
+`INetworkSession` is an observation contract for logical membership and ownership. A platform implementation such as a Steam Lobby adapter owns the join/leave lifecycle and publishes `Started`, `Stopped`, `MemberJoined`, `MemberLeft` and `OwnerChanged`. Transport connection events remain physical connection facts and may disconnect or reconnect without removing a session member.
 
 ## Object extensions
 
@@ -60,16 +71,15 @@ public sealed class ProjectNetworkObject : NetworkObject
 }
 ```
 
-`NetworkObjectManager` also implements:
+`INetworkObjectManager` exposes symmetric `Spawned` and `Despawned` events with the object and its session-stable `uint` id, and resolves spawned objects by id. `NetworkObject.OwnerPeerId` identifies the current authority independently from identity. Local ids come from the injected `INetworkObjectIdAllocator`; the project lifecycle guarantees that `Allocate` is called only after local allocation is initialized. `Spawned` runs after the object is bound and initialized; `Despawned` runs after removal and unbinding, immediately before factory destruction. `NetworkObjectManager` uses transport connection events only for snapshot delivery, and session member events for object cleanup.
 
-- `INetworkObjectEvents`: `Spawned` and `Despawning`
-- `INetworkObjectResolver`: resolves an object by `NetworkObjectId`
+Local `Spawn` asks `INetworkObjectFactory` to create the registered prefab, invokes the caller's typed initializer, binds the network identity, sends the initial snapshot, and then publishes `Spawned`.
 
-Project modules register their own byte messages through `INetworkManager`. Application message types start at `NetworkMessageType.User`. RPC, variable replication, batching, update cadence and ownership policy belong to the project or an optional package built on this core.
+Project modules register and send their own byte messages through `INetworkMessageManager`. Application message types start at `NetworkMessageType.User`. RPC, variable replication, batching, update cadence and ownership policy belong to the project or an optional package built on this core.
 
 ## Serialization
 
-All payload APIs use `ReadOnlySpan<byte>`. Build payloads with `BufferWriter` and read them with `BufferReader`.
+All byte APIs use `ReadOnlySpan<byte>`. Messages sent through `INetworkMessageManager` begin with a one-byte message type followed by the payload. Build messages with `BufferWriter` and read payloads with `BufferReader`.
 
 `Serializer<T>` and `Deserializer<T>` provide default raw-memory encoding for unmanaged values. That default requires matching builds, layouts and endianness; override both delegates when a value needs a stable field protocol.
 
@@ -77,7 +87,7 @@ All payload APIs use `ReadOnlySpan<byte>`. Build payloads with `BufferWriter` an
 
 | Namespace | Types |
 | --- | --- |
-| `Xoderony.Networking` | Session and network-object lifecycle contracts and implementations |
+| `Xoderony.Networking` | Session facts, message routing and network-object lifecycle contracts and implementations |
 | `Xoderony.Networking.Serialization` | `BufferWriter`, `BufferReader`, `Serializer<T>`, `Deserializer<T>` |
 | `Xoderony.Networking.Transport` | `INetworkTransport`, placeholder `LoopbackTransport`, `NetworkDelivery` |
 | `Xoderony.Networking.Messaging` | General message delegates, type boundary and payload limit |

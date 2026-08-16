@@ -7,5 +7,8 @@ namespace Xoderony.Networking.Messaging
     {
         /// <summary>单条消息的最大载荷容量。</summary>
         public const int PayloadCapacity = 1088;
+
+        /// <summary>单条消息的最大容量：类型 + 载荷。</summary>
+        public const int MessageCapacity = sizeof(byte) + PayloadCapacity;
     }
 }

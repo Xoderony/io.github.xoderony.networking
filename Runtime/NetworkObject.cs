@@ -3,7 +3,7 @@ using Xoderony.Networking.Serialization;
 
 namespace Xoderony.Networking {
     /// <summary>
-    /// GameObject 上的网络身份。对等模型：生成者即拥有者（DA），id 见 <see cref="NetworkObjectId"/>。
+    /// GameObject 上的网络身份：Id 在逻辑会话内稳定且唯一，OwnerPeerId 表示当前权威端。
     /// 契约见 <see cref="INetworkObject"/>。
     /// 入网快照扩展覆写 <see cref="OnSerializeSnapshot"/> / <see cref="OnDeserializeSnapshot"/>，只走 Spawn 与晚加入。
     /// </summary>
@@ -12,11 +12,13 @@ namespace Xoderony.Networking {
         private NetworkObjectManager _objectManager;
         [SerializeField] private int _prefabId;
 
-        public NetworkObjectId Id { get; internal set; }
+        public uint Id { get; internal set; }
+
+        public ulong OwnerPeerId { get; internal set; }
 
         public bool IsSpawned => _objectManager != null;
 
-        public bool IsOwner => IsSpawned && Id.PeerId == _objectManager.LocalPeerId;
+        public bool IsOwner => IsSpawned && OwnerPeerId == _objectManager.LocalPeerId;
 
         public int PrefabId {
             get => _prefabId;
@@ -33,9 +35,10 @@ namespace Xoderony.Networking {
         protected virtual void OnDeserializeSnapshot(ref BufferReader reader) {
         }
 
-        internal void Bind(NetworkObjectManager objectManager, in NetworkObjectId id) {
+        internal void Bind(NetworkObjectManager objectManager, uint id, ulong ownerPeerId) {
             _objectManager = objectManager;
             Id = id;
+            OwnerPeerId = ownerPeerId;
         }
 
         internal void Unbind() {
@@ -43,6 +46,7 @@ namespace Xoderony.Networking {
 
             _objectManager = null;
             Id = default;
+            OwnerPeerId = default;
         }
 
         internal void SerializeSnapshot(ref BufferWriter writer) {

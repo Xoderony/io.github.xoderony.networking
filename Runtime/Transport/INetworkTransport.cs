@@ -19,10 +19,13 @@ namespace Xoderony.Networking.Transport
         /// <summary>本机对等端 id（Steam 下即 SteamID）；<see cref="Start"/> 成功前无效（0）。</summary>
         ulong LocalPeerId { get; }
 
-        /// <summary>初始化并启动本端（开始监听入站连接）。返回成功或失败；进程级单例，仅调用一次。</summary>
+        /// <summary>初始化或重新启动本端并开始监听入站连接；已运行时不得重复调用。</summary>
         bool Start();
 
-        /// <summary>停止传输并释放资源（断开所有连接，不可复用）。</summary>
+        /// <summary>
+        /// 停止当前传输；逐一经 <see cref="PeerDisconnected"/> 上报并断开所有连接，随后释放本次运行资源。
+        /// 再次 <see cref="Start"/> 前不能收发数据。
+        /// </summary>
         void Stop();
 
         /// <summary>每帧由上层驱动，供传输处理底层事件（如 Steam 回调/消息）。</summary>
