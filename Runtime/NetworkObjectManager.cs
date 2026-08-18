@@ -32,8 +32,8 @@ namespace Xoderony.Networking {
             _messageManager = messageManager;
             _idAllocator = idAllocator;
             _factory = factory;
-            messageManager.RegisterMessage(NetworkMessageType.Spawn, OnSpawnMessage);
-            messageManager.RegisterMessage(NetworkMessageType.Despawn, OnDespawnMessage);
+            messageManager.RegisterHandler(NetworkMessageType.Spawn, OnSpawnMessage);
+            messageManager.RegisterHandler(NetworkMessageType.Despawn, OnDespawnMessage);
             session.MemberJoined += OnMemberJoined;
             session.MemberLeft += OnMemberLeft;
             session.Stopped += OnSessionStopped;
@@ -70,7 +70,7 @@ namespace Xoderony.Networking {
             Debug.Assert(!prefab.gameObject.scene.IsValid(), "Spawn requires a prefab asset, not a scene instance.");
             Debug.Assert(_prefabs.TryGetValue(prefab.PrefabId, out var registeredPrefab) && registeredPrefab == prefab, "Prefab is not registered.");
 
-            var instance = _factory.Create(prefab);
+            var instance = _factory.Instantiate(prefab);
             initialize?.Invoke(instance);
             var id = _idAllocator.Allocate();
             SpawnLocal(id, _transport.LocalPeerId, instance);
@@ -101,8 +101,8 @@ namespace Xoderony.Networking {
         }
 
         public void Dispose() {
-            _messageManager.UnregisterMessage(NetworkMessageType.Spawn, OnSpawnMessage);
-            _messageManager.UnregisterMessage(NetworkMessageType.Despawn, OnDespawnMessage);
+            _messageManager.UnregisterHandler(NetworkMessageType.Spawn, OnSpawnMessage);
+            _messageManager.UnregisterHandler(NetworkMessageType.Despawn, OnDespawnMessage);
             _session.MemberJoined -= OnMemberJoined;
             _session.MemberLeft -= OnMemberLeft;
             _session.Stopped -= OnSessionStopped;
@@ -171,7 +171,7 @@ namespace Xoderony.Networking {
             _prefabs.TryGetValue(prefabId, out var prefab);
             Debug.Assert(prefab != null, $"Prefab id {prefabId} is not registered.");
 
-            var instance = _factory.Create(prefab);
+            var instance = _factory.Instantiate(prefab);
             SpawnLocal(id, senderPeerId, instance);
             instance.DeserializeSnapshot(ref reader);
             Spawned?.Invoke(instance, id);
@@ -207,7 +207,7 @@ namespace Xoderony.Networking {
             _objects.Remove(id);
             networkObject.Unbind();
             Despawned?.Invoke(networkObject, id);
-            _factory.Destroy(networkObject);
+            _factory.Release(networkObject);
         }
     }
 }

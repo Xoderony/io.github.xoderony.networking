@@ -1,10 +1,10 @@
-using UnityEngine;
-
 namespace Xoderony.Networking {
-    /// <summary>网络对象的创建与销毁，由外部实现（Instantiate、对象池等）。</summary>
+    /// <summary>负责网络对象实例的创建与释放。</summary>
     public interface INetworkObjectFactory {
-        NetworkObject Create(NetworkObject prefab);
+        /// <summary>根据指定 Prefab 获取一个网络对象实例。</summary>
+        NetworkObject Instantiate(NetworkObject prefab);
 
-        void Destroy(NetworkObject instance);
+        /// <summary>释放不再使用的网络对象实例。</summary>
+        void Release(NetworkObject instance);
     }
 }

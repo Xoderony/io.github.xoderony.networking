@@ -8,7 +8,7 @@ namespace Xoderony.Networking {
     /// 入网快照扩展覆写 <see cref="OnSerializeSnapshot"/> / <see cref="OnDeserializeSnapshot"/>，只走 Spawn 与晚加入。
     /// </summary>
     [DisallowMultipleComponent]
-    public class NetworkObject : MonoBehaviour, INetworkObject {
+    public class NetworkObject : MonoBehaviour {
         private NetworkObjectManager _objectManager;
         [SerializeField] private int _prefabId;
 

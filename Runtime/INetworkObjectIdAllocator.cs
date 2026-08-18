@@ -1,7 +1,7 @@
 namespace Xoderony.Networking {
-    /// <summary>为本端生成的网络对象提供会话内唯一且稳定的 uint id。</summary>
+    /// <summary>为本地生成的网络对象分配会话内唯一 id。</summary>
     public interface INetworkObjectIdAllocator {
-        /// <summary>从已授权的本地区间取得下一个 id。</summary>
+        /// <summary>分配一个当前会话内未曾分配过的非零 id。</summary>
         uint Allocate();
     }
 }

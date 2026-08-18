@@ -1,24 +1,30 @@
 using System;
 
 namespace Xoderony.Networking {
-    /// <summary>会话内网络对象管理：Prefab 登记、对象生命周期、事件发布与 id 解析。</summary>
+    /// <summary>管理会话内网络 Prefab 和已生成网络对象的生命周期与查询。</summary>
     public interface INetworkObjectManager {
-        /// <summary>对象已绑定、完成初始化且可通过 id 解析时发布。</summary>
+        /// <summary>网络对象完成生成并可通过 id 查询时触发。</summary>
         event Action<NetworkObject, uint> Spawned;
 
-        /// <summary>对象已移除并解绑、即将交给工厂销毁时发布；id 为解绑前身份。</summary>
+        /// <summary>网络对象完成移除并解除网络身份后触发；id 为移除前的网络对象 id。</summary>
         event Action<NetworkObject, uint> Despawned;
 
+        /// <summary>注册可用于网络生成的 Prefab。</summary>
         void RegisterPrefab(NetworkObject prefab);
 
+        /// <summary>注销已注册的 Prefab。</summary>
         void UnregisterPrefab(NetworkObject prefab);
 
+        /// <summary>尝试获取指定 id 对应的已注册 Prefab。</summary>
         bool TryGetPrefab(int prefabId, out NetworkObject prefab);
 
+        /// <summary>尝试获取指定 id 对应的已生成网络对象。</summary>
         bool TryGetSpawned(uint id, out NetworkObject spawned);
 
+        /// <summary>生成一个由本端拥有的网络对象；initialize 在对象初始网络状态序列化前调用。</summary>
         NetworkObject Spawn(NetworkObject prefab, Action<NetworkObject> initialize = null);
 
-        void Despawn(NetworkObject networkObject);
+        /// <summary>移除指定的本端拥有网络对象。</summary>
+        void Despawn(NetworkObject instance);
     }
 }

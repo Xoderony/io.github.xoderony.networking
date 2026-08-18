@@ -22,11 +22,11 @@ namespace Xoderony.Networking {
             transport.DataReceived += OnDataReceived;
         }
 
-        public void RegisterMessage(byte messageType, NetworkMessageHandler handler) {
+        public void RegisterHandler(byte messageType, NetworkMessageHandler handler) {
             _handlers[messageType] += handler;
         }
 
-        public void UnregisterMessage(byte messageType, NetworkMessageHandler handler) {
+        public void UnregisterHandler(byte messageType, NetworkMessageHandler handler) {
             _handlers[messageType] -= handler;
         }
 
