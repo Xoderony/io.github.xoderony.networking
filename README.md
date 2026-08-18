@@ -1,75 +1,104 @@
 # io.github.xoderony.networking
 
-Lightweight Unity net sync oriented around **Steam + Distributed Authority**:
+Lightweight Unity networking core for peer-to-peer Distributed Authority:
 
-- Explicit typed messages (no RPC / NetworkVariable / NetworkBehaviour)
-- Host as relay + ClientId assignment; owners push entity state
-- Industry-standard type names (`NetworkManager`, `NetworkObject`, …) in `Xoderony.Networking`
-- `NetworkTransport` with in-process `LoopbackTransport` and a Steam stub
+- Transport-neutral session facts and byte message routing
+- Network object identity, Spawn/Despawn, prefab lookup and late-join snapshots
+- Explicit lifecycle and resolver contracts for project-owned extensions
+- Buffer and unmanaged serialization primitives
+- No built-in RPC, NetworkVariable, gameplay state policy, NGO or Steamworks dependency
 
 ## Install
 
-Add as a local UPM package (manifest `file:` path) or git URL once published:
+Add as a local UPM package or git dependency:
 
 ```json
 "io.github.xoderony.networking": "file:../io.github.xoderony.networking"
 ```
 
-Unity 6 (`6000.0`+) recommended. No NGO dependency.
+Unity 6 (`6000.0`+) recommended.
 
-## Quick start (loopback)
+## Core composition
 
 ```csharp
 using Xoderony.Networking;
+using Xoderony.Networking.Serialization;
 using Xoderony.Networking.Transport;
 
-var host = hostGo.AddComponent<NetworkManager>();
-host.BindTransport(new LoopbackTransport("room"));
-host.StartHost();
-host.SpawnManager.RegisterPrefab(1, cubePrefab);
+INetworkTransport transport = CreateTransport();
+INetworkSession session = CreateSession();
+var messageManager = new NetworkMessageManager(transport);
+INetworkObjectIdAllocator idAllocator = CreateObjectIdAllocator();
+var objectFactory = new InstantiateNetworkObjectFactory();
+var objectManager = new NetworkObjectManager(transport, session, messageManager, idAllocator, objectFactory);
 
-var client = clientGo.AddComponent<NetworkManager>();
-client.BindTransport(new LoopbackTransport("room"));
-client.SpawnManager.RegisterPrefab(1, cubePrefab);
-client.Connected += () => { /* LocalClientId ready */ };
-client.StartClient(LoopbackTransport.RoomAddress("room"));
+objectManager.RegisterPrefab(prefab);
+transport.Start();
 
-host.SpawnManager.Spawn(1, client.LocalClientId, Vector3.zero, Quaternion.identity);
+var instance = objectManager.Spawn(prefab, instance =>
+{
+    // Initialize project state before the initial snapshot is serialized.
+});
 ```
 
-Owner sync:
+The caller owns the update and shutdown lifecycle:
 
 ```csharp
-public sealed class MyObject : NetworkObject
+transport.Poll();
+transport.Stop();
+objectManager.Dispose();
+messageManager.Dispose();
+```
+
+`INetworkSession` is an observation contract for logical membership and ownership. A platform implementation such as a Steam Lobby adapter owns the join/leave lifecycle and publishes `Started`, `Stopped`, `MemberJoined`, `MemberLeft` and `OwnerChanged`. Transport connection events remain physical connection facts and may disconnect or reconnect without removing a session member.
+
+## Object extensions
+
+Derive from `NetworkObject` to define project-specific Spawn snapshot data:
+
+```csharp
+public sealed class ProjectNetworkObject : NetworkObject
 {
-    public void Push()
+    protected override void OnSerializeSnapshot(ref BufferWriter writer)
     {
-        var writer = new BufferWriter(8);
-        writer.WriteFloat(transform.position.x);
-        SendState(writer);
+        // Project-owned layout.
     }
 
-    protected override void OnNetworkState(ArraySegment<byte> payload) { /* apply */ }
+    protected override void OnDeserializeSnapshot(ref BufferReader reader)
+    {
+        // Must consume the same layout.
+    }
 }
 ```
 
-Application messages: register on `networkManager.CustomMessaging` with types `>= NetworkMessageType.User`, then `SendToOthers`.
+`INetworkObjectManager` exposes symmetric `Spawned` and `Despawned` events with the object and its session-stable `uint` id, and resolves spawned objects by id. `NetworkObject.OwnerPeerId` identifies the current authority independently from identity. Local ids come from the injected `INetworkObjectIdAllocator`; the project lifecycle guarantees that `Allocate` is called only after local allocation is initialized. `Spawned` runs after the object is bound and initialized; `Despawned` runs after removal and unbinding, immediately before factory destruction. `NetworkObjectManager` uses transport connection events only for snapshot delivery, and session member events for object cleanup.
+
+Local `Spawn` asks `INetworkObjectFactory` to create the registered prefab, invokes the caller's typed initializer, binds the network identity, sends the initial snapshot, and then publishes `Spawned`.
+
+Project modules register and send their own byte messages through `INetworkMessageManager`. Application message types start at `NetworkMessageType.User`. RPC, variable replication, batching, update cadence and ownership policy belong to the project or an optional package built on this core.
+
+## Serialization
+
+All byte APIs use `ReadOnlySpan<byte>`. Messages sent through `INetworkMessageManager` begin with a one-byte message type followed by the payload. Build messages with `BufferWriter` and read payloads with `BufferReader`.
+
+`Serializer<T>` and `Deserializer<T>` provide default raw-memory encoding for unmanaged values. That default requires matching builds, layouts and endianness; override both delegates when a value needs a stable field protocol.
 
 ## Layout
 
 | Namespace | Types |
-|-----------|--------|
-| `Xoderony.Networking` | `NetworkManager`, `NetworkObject`, `NetworkSpawnManager`, `BufferWriter`, `BufferReader` |
-| `Xoderony.Networking.Transport` | `NetworkTransport`, `LoopbackTransport`, `SteamNetworkTransport`, `NetworkDelivery` |
-| `Xoderony.Networking.Messaging` | `CustomMessagingManager`, `NetworkMessageType` |
+| --- | --- |
+| `Xoderony.Networking` | Session facts, message routing and network-object lifecycle contracts and implementations |
+| `Xoderony.Networking.Serialization` | `BufferWriter`, `BufferReader`, `Serializer<T>`, `Deserializer<T>` |
+| `Xoderony.Networking.Transport` | `INetworkTransport`, placeholder `LoopbackTransport`, `NetworkDelivery` |
+| `Xoderony.Networking.Messaging` | General message delegates, type boundary and payload limit |
 
 ## Samples
 
-**Loopback Demo** (`Samples~/LoopbackDemo`): host + client in one process, spawn a cube owned by the client, owner paints color over `EntityState`.
+`Samples~/LoopbackDemo` only demonstrates a derived object snapshot. `LoopbackTransport` is intentionally an unimplemented placeholder.
 
 ## Steam
 
-`SteamNetworkTransport` is intentionally unwired so this package stays free of a Steamworks dependency. Implement `NetworkTransport` against SteamNetworkingSockets in a game/Steam-specific assembly.
+This package ships no Steam transport. The game project provides `JoG.Networking.SteamNetworkTransport` as a consumer-side implementation.
 
 ## Status
 

@@ -1,51 +1,40 @@
-using System;
 using UnityEngine;
+using Xoderony.Networking.Serialization;
 
 namespace Xoderony.Networking.Samples
 {
-    using BufferReader = Xoderony.Networking.BufferReader;
-    using BufferWriter = Xoderony.Networking.BufferWriter;
     using NetworkObject = Xoderony.Networking.NetworkObject;
 
-    /// <summary>
-    /// Owner paints a color and pushes it through <see cref="NetworkObject.SendState"/>.
-    /// </summary>
+    /// <summary>派生对象快照示例；LoopbackTransport 当前仍是空壳。</summary>
     public sealed class DemoCube : NetworkObject
     {
         private Renderer _renderer;
-        private readonly BufferWriter _colorPayload = new BufferWriter(16);
-        private readonly BufferReader _colorReader = new BufferReader(16);
+        private Color _color = Color.white;
 
         private void Awake()
         {
             _renderer = GetComponent<Renderer>();
+            ApplyColor(_color);
         }
 
-        public void SetColorAndSync(Color color)
+        public void SetColor(Color color)
         {
+            _color = color;
             ApplyColor(color);
-            if (!IsOwner)
-            {
-                return;
-            }
-
-            _colorPayload.Clear();
-            _colorPayload.WriteFloat(color.r);
-            _colorPayload.WriteFloat(color.g);
-            _colorPayload.WriteFloat(color.b);
-            _colorPayload.WriteFloat(color.a);
-            SendState(_colorPayload);
         }
 
-        protected override void OnNetworkState(ArraySegment<byte> payload)
+        protected override void OnSerializeSnapshot(ref BufferWriter writer)
         {
-            _colorReader.Load(payload);
-            var color = new Color(
-                _colorReader.ReadFloat(),
-                _colorReader.ReadFloat(),
-                _colorReader.ReadFloat(),
-                _colorReader.ReadFloat());
-            ApplyColor(color);
+            writer.WriteFloat(_color.r);
+            writer.WriteFloat(_color.g);
+            writer.WriteFloat(_color.b);
+            writer.WriteFloat(_color.a);
+        }
+
+        protected override void OnDeserializeSnapshot(ref BufferReader reader)
+        {
+            _color = new Color(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
+            ApplyColor(_color);
         }
 
         private void ApplyColor(Color color)

@@ -15,7 +15,7 @@
   "samples": [
     {
       "displayName": "Loopback Demo",
-      "description": "Two in-process peers over LoopbackNetTransport: host, client, spawn, owner state.",
+      "description": "Placeholder object snapshot sample; LoopbackTransport is not implemented.",
       "path": "Samples~/LoopbackDemo"
     }
   ]
