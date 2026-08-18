@@ -50,7 +50,7 @@ objectManager.Dispose();
 messageManager.Dispose();
 ```
 
-`INetworkSession` is an observation contract for logical membership and ownership. A platform implementation such as a Steam Lobby adapter owns the join/leave lifecycle and publishes `Started`, `Stopped`, `MemberJoined`, `MemberLeft` and `OwnerChanged`. Transport connection events remain physical connection facts and may disconnect or reconnect without removing a session member.
+`INetworkSession` derives `MemberJoined` from the first transport connection to each peer and `MemberLeft` when that peer disconnects or leaves the logical session (whichever happens first; only once per departure).
 
 ## Object extensions
 
@@ -71,9 +71,9 @@ public sealed class ProjectNetworkObject : NetworkObject
 }
 ```
 
-`INetworkObjectManager` exposes symmetric `Spawned` and `Despawned` events with the object and its session-stable `uint` id, and resolves spawned objects by id. `NetworkObject.OwnerPeerId` identifies the current authority independently from identity. Local ids come from the injected `INetworkObjectIdAllocator`; the project lifecycle guarantees that `Allocate` is called only after local allocation is initialized. `Spawned` runs after the object is bound and initialized; `Despawned` runs after removal and unbinding, immediately before factory destruction. `NetworkObjectManager` uses transport connection events only for snapshot delivery, and session member events for object cleanup.
+`INetworkObjectManager` exposes symmetric `Spawned` and `Despawned` events with the object and its session-stable `uint` id, and resolves spawned objects by id. `NetworkObject.OwnerPeerId` identifies the current authority independently from identity. Local ids come from the injected `INetworkObjectIdAllocator`; the project lifecycle guarantees that `Allocate` is called only after local allocation is initialized. `Spawned` runs after the object is bound and initialized; `Despawned` runs after removal and unbinding, immediately before factory destruction. `NetworkObjectManager` uses session `MemberJoined` for snapshot delivery to newly connected peers and session `MemberLeft` for object cleanup.
 
-Local `Spawn` asks `INetworkObjectFactory` to create the registered prefab, invokes the caller's typed initializer, binds the network identity, sends the initial snapshot, and then publishes `Spawned`.
+Local `Spawn` asks `INetworkObjectFactory` to create the registered prefab, invokes the caller's initializer, binds the network identity, sends the initial snapshot, and then publishes `Spawned`.
 
 Project modules register and send their own byte messages through `INetworkMessageManager`. Application message types start at `NetworkMessageType.User`. RPC, variable replication, batching, update cadence and ownership policy belong to the project or an optional package built on this core.
 
@@ -98,7 +98,7 @@ All byte APIs use `ReadOnlySpan<byte>`. Messages sent through `INetworkMessageMa
 
 ## Steam
 
-This package ships no Steam transport. The game project provides `JoG.Networking.SteamNetworkTransport` as a consumer-side implementation.
+This package ships no Steam transport. The game project provides `JoG.Networking.P2P.SteamNetworkTransport` as a consumer-side implementation.
 
 ## Status
 

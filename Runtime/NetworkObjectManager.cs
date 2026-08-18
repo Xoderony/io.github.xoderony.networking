@@ -8,8 +8,7 @@ using Xoderony.Networking.Transport;
 namespace Xoderony.Networking {
     /// <summary>
     /// 对等会话中的网络对象生命周期：本端派生 id 并广播生成/销毁，
-    /// 新传输连接建立时补发本端对象（含派生对象快照），成员离开或会话停止时清理。
-    /// 消息协议随本实例存活；逻辑会话只提供成员和停止事实。
+    /// 成员经 Session 承认后补发本端对象快照，成员离开或会话停止时清理。
     /// </summary>
     public sealed class NetworkObjectManager : INetworkObjectManager, IDisposable {
         /// <summary>Spawn 固定头：Id + PrefabId。</summary>
@@ -35,7 +34,7 @@ namespace Xoderony.Networking {
             _factory = factory;
             messageManager.RegisterMessage(NetworkMessageType.Spawn, OnSpawnMessage);
             messageManager.RegisterMessage(NetworkMessageType.Despawn, OnDespawnMessage);
-            transport.PeerConnected += OnPeerConnected;
+            session.MemberJoined += OnMemberJoined;
             session.MemberLeft += OnMemberLeft;
             session.Stopped += OnSessionStopped;
         }
@@ -67,7 +66,7 @@ namespace Xoderony.Networking {
         /// 由工厂创建 Prefab 实例，调用初始化委托后以本机为拥有者入网并广播。
         /// 初始快照在绑定网络身份后序列化，并在发布 <see cref="Spawned"/> 前发送。
         /// </summary>
-        public T Spawn<T>(T prefab, Action<T> initialize = null) where T : NetworkObject {
+        public NetworkObject Spawn(NetworkObject prefab, Action<NetworkObject> initialize = null) {
             Debug.Assert(!prefab.gameObject.scene.IsValid(), "Spawn requires a prefab asset, not a scene instance.");
             Debug.Assert(_prefabs.TryGetValue(prefab.PrefabId, out var registeredPrefab) && registeredPrefab == prefab, "Prefab is not registered.");
 
@@ -104,7 +103,7 @@ namespace Xoderony.Networking {
         public void Dispose() {
             _messageManager.UnregisterMessage(NetworkMessageType.Spawn, OnSpawnMessage);
             _messageManager.UnregisterMessage(NetworkMessageType.Despawn, OnDespawnMessage);
-            _transport.PeerConnected -= OnPeerConnected;
+            _session.MemberJoined -= OnMemberJoined;
             _session.MemberLeft -= OnMemberLeft;
             _session.Stopped -= OnSessionStopped;
         }
@@ -120,7 +119,7 @@ namespace Xoderony.Networking {
             }
         }
 
-        private void OnPeerConnected(ulong peerId) {
+        private void OnMemberJoined(ulong peerId) {
             Span<byte> buffer = stackalloc byte[NetworkMessageLimits.MessageCapacity];
             foreach (var pair in _objects) {
                 var networkObject = pair.Value;

@@ -17,7 +17,7 @@ namespace Xoderony.Networking {
 
         bool TryGetSpawned(uint id, out NetworkObject spawned);
 
-        T Spawn<T>(T prefab, Action<T> initialize = null) where T : NetworkObject;
+        NetworkObject Spawn(NetworkObject prefab, Action<NetworkObject> initialize = null);
 
         void Despawn(NetworkObject networkObject);
     }
