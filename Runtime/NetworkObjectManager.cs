@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Assertions;
 using Xoderony.Networking.Messaging;
 using Xoderony.Networking.Serialization;
 using Xoderony.Networking.Transport;
@@ -22,9 +23,9 @@ namespace Xoderony.Networking {
 
         internal ulong LocalPeerId => _transport.LocalPeerId;
 
-        public event Action<NetworkObject, uint> Spawned;
+        public event Action<NetworkObject> Spawned;
 
-        public event Action<NetworkObject, uint> Despawned;
+        public event Action<NetworkObject> Despawned;
 
         public NetworkObjectManager(INetworkTransport transport, INetworkSession session, INetworkMessageManager messageManager, INetworkObjectIdAllocator idAllocator, INetworkObjectFactory factory) {
             _transport = transport;
@@ -41,10 +42,8 @@ namespace Xoderony.Networking {
 
         public void RegisterPrefab(NetworkObject prefab) {
             var prefabId = Animator.StringToHash(prefab.gameObject.name);
-            Debug.Assert(prefabId != 0, "Prefab name hashed to reserved id 0.");
-            if (_prefabs.TryGetValue(prefabId, out var existing)) {
-                Debug.Assert(existing == prefab, "Prefab id collision.");
-            }
+            Assert.AreNotEqual(0, prefabId, "Prefab name hashed to reserved id 0.");
+            Assert.IsTrue(!_prefabs.TryGetValue(prefabId, out var existing) || existing == prefab, "Prefab id collision.");
 
             prefab.PrefabId = prefabId;
             _prefabs[prefabId] = prefab;
@@ -64,32 +63,32 @@ namespace Xoderony.Networking {
 
         /// <summary>
         /// 由工厂创建 Prefab 实例，调用初始化委托后以本机为拥有者入网并广播。
-        /// 初始快照在绑定网络身份后序列化，并在发布 <see cref="Spawned"/> 前发送。
+        /// 先发送初始快照，再绑定网络身份并发布 <see cref="Spawned"/>。
         /// </summary>
         public NetworkObject Spawn(NetworkObject prefab, Action<NetworkObject> initialize = null) {
-            Debug.Assert(!prefab.gameObject.scene.IsValid(), "Spawn requires a prefab asset, not a scene instance.");
-            Debug.Assert(_prefabs.TryGetValue(prefab.PrefabId, out var registeredPrefab) && registeredPrefab == prefab, "Prefab is not registered.");
+            Assert.IsFalse(prefab.gameObject.scene.IsValid(), "Spawn requires a prefab asset, not a scene instance.");
+            _prefabs.TryGetValue(prefab.PrefabId, out var registeredPrefab);
+            Assert.AreEqual(prefab, registeredPrefab, "Prefab is not registered.");
 
             var instance = _factory.Instantiate(prefab);
             initialize?.Invoke(instance);
             var id = _idAllocator.Allocate();
-            SpawnLocal(id, _transport.LocalPeerId, instance);
 
             Span<byte> buffer = stackalloc byte[NetworkMessageLimits.MessageCapacity];
             var writer = new BufferWriter(buffer);
             writer.WriteByte(NetworkMessageType.Spawn);
-            writer.WriteUInt(instance.Id);
+            writer.WriteUInt(id);
             writer.WriteInt(instance.PrefabId);
             instance.SerializeSnapshot(ref writer);
             _messageManager.SendToOthers(writer.Written, NetworkDelivery.Reliable);
 
-            Spawned?.Invoke(instance, id);
+            SpawnLocal(id, _transport.LocalPeerId, instance);
             return instance;
         }
 
         /// <summary>销毁本端拥有的对象并广播 Despawn。仅拥有者可调用。</summary>
         public void Despawn(NetworkObject networkObject) {
-            Debug.Assert(networkObject.IsOwner, "Only the owner can despawn a network object.");
+            Assert.IsTrue(networkObject.IsOwner, "Only the owner can despawn a network object.");
 
             Span<byte> buffer = stackalloc byte[NetworkMessageLimits.MessageCapacity];
             var writer = new BufferWriter(buffer);
@@ -154,27 +153,18 @@ namespace Xoderony.Networking {
             var prefabId = reader.ReadInt();
 
             if (_objects.TryGetValue(id, out var existing)) {
-                if (existing.OwnerPeerId != senderPeerId) {
-                    Debug.Assert(false, "Network object id collision between different owners.");
-                    return;
-                }
-
-                if (existing.PrefabId != prefabId) {
-                    Debug.Assert(false, "Spawn snapshot prefab does not match the existing object.");
-                    return;
-                }
-
+                Assert.AreEqual(senderPeerId, existing.OwnerPeerId, "Network object id collision between different owners.");
+                Assert.AreEqual(prefabId, existing.PrefabId, "Spawn snapshot prefab does not match the existing object.");
                 existing.DeserializeSnapshot(ref reader);
                 return;
             }
 
             _prefabs.TryGetValue(prefabId, out var prefab);
-            Debug.Assert(prefab != null, $"Prefab id {prefabId} is not registered.");
+            Assert.IsNotNull(prefab, $"Prefab id {prefabId} is not registered.");
 
             var instance = _factory.Instantiate(prefab);
-            SpawnLocal(id, senderPeerId, instance);
             instance.DeserializeSnapshot(ref reader);
-            Spawned?.Invoke(instance, id);
+            SpawnLocal(id, senderPeerId, instance);
         }
 
         private void OnDespawnMessage(ulong senderPeerId, BufferReader reader) {
@@ -183,30 +173,26 @@ namespace Xoderony.Networking {
                 return;
             }
 
-            if (networkObject.OwnerPeerId != senderPeerId) {
-                Debug.Assert(false, "Only the current owner can despawn a network object.");
-                return;
-            }
-
+            Assert.AreEqual(senderPeerId, networkObject.OwnerPeerId, "Only the current owner can despawn a network object.");
             DestroyLocal(id);
         }
 
         private void SpawnLocal(uint id, ulong ownerPeerId, NetworkObject instance) {
-            Debug.Assert(id != 0, "Network object id 0 is reserved.");
-            Debug.Assert(ownerPeerId != 0, "Network object owner PeerId 0 is invalid.");
-            Debug.Assert(!_objects.ContainsKey(id), "Network object id is already in use.");
+            Assert.AreNotEqual(0u, id, "Network object id 0 is reserved.");
+            Assert.AreNotEqual(0ul, ownerPeerId, "Network object owner PeerId 0 is invalid.");
+            Assert.IsFalse(_objects.ContainsKey(id), "Network object id is already in use.");
             instance.Bind(this, id, ownerPeerId);
             _objects[id] = instance;
+            Spawned?.Invoke(instance);
         }
 
         private void DestroyLocal(uint id) {
-            if (!_objects.TryGetValue(id, out var networkObject)) {
+            if (!_objects.Remove(id, out var networkObject)) {
                 return;
             }
 
-            _objects.Remove(id);
+            Despawned?.Invoke(networkObject);
             networkObject.Unbind();
-            Despawned?.Invoke(networkObject, id);
             _factory.Release(networkObject);
         }
     }

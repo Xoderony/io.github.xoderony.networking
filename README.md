@@ -71,9 +71,9 @@ public sealed class ProjectNetworkObject : NetworkObject
 }
 ```
 
-`INetworkObjectManager` exposes symmetric `Spawned` and `Despawned` events with the object and its session-stable `uint` id, and resolves spawned objects by id. `NetworkObject.OwnerPeerId` identifies the current authority independently from identity. Local ids come from the injected `INetworkObjectIdAllocator`; the project lifecycle guarantees that `Allocate` is called only after local allocation is initialized. `Spawned` runs after the object is bound and initialized; `Despawned` runs after removal and unbinding, immediately before factory destruction. `NetworkObjectManager` uses session `MemberJoined` for snapshot delivery to newly connected peers and session `MemberLeft` for object cleanup.
+`INetworkObjectManager` exposes symmetric `Spawned` and `Despawned` events with the object, and resolves spawned objects by id. `NetworkObject.OwnerPeerId` identifies the current authority independently from identity. Local ids come from the injected `INetworkObjectIdAllocator`; the project lifecycle guarantees that `Allocate` is called only after local allocation is initialized. `Spawned` runs after the object is bound and initialized; `Despawned` runs after removal from the table and before unbind, immediately before factory destruction. `NetworkObjectManager` uses session `MemberJoined` for snapshot delivery to newly connected peers and session `MemberLeft` for object cleanup.
 
-Local `Spawn` asks `INetworkObjectFactory` to create the registered prefab, invokes the caller's initializer, binds the network identity, sends the initial snapshot, and then publishes `Spawned`.
+Local `Spawn` asks `INetworkObjectFactory` to create the registered prefab, invokes the caller's initializer, sends the initial snapshot, binds the network identity, and then publishes `Spawned`. Remote spawn applies the snapshot before bind.
 
 Project modules register and send their own byte messages through `INetworkMessageManager`. Application message types start at `NetworkMessageType.User`. RPC, variable replication, batching, update cadence and ownership policy belong to the project or an optional package built on this core.
 

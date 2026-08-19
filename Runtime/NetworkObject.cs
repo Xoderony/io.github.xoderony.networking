@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Assertions;
 using Xoderony.Networking.Serialization;
 
 namespace Xoderony.Networking {
@@ -42,7 +43,7 @@ namespace Xoderony.Networking {
         }
 
         internal void Unbind() {
-            Debug.Assert(IsSpawned, "Instance is not spawned.");
+            Assert.IsTrue(IsSpawned, "Instance is not spawned.");
 
             _objectManager = null;
             Id = default;
