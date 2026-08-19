@@ -10,7 +10,7 @@ namespace Xoderony.Networking {
         event Action<NetworkObject> Despawned;
 
         /// <summary>网络对象权威已变更时触发；此时 <see cref="NetworkObject.OwnerPeerId"/> 已是新权威。</summary>
-        event Action<NetworkObject> OwnerChanged;
+        event Action<NetworkObject, ulong, ulong> OwnerChanged;
 
         /// <summary>注册可用于网络生成的 Prefab。</summary>
         void RegisterPrefab(NetworkObject prefab);
