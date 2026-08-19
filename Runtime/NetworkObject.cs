@@ -12,6 +12,7 @@ namespace Xoderony.Networking {
     public class NetworkObject : MonoBehaviour {
         private NetworkObjectManager _objectManager;
         [SerializeField] private int _prefabId;
+        [SerializeField] private bool _persistOnOwnerLeave;
 
         public uint Id { get; internal set; }
 
@@ -27,6 +28,15 @@ namespace Xoderony.Networking {
         }
 
         /// <summary>
+        /// Owner 离开后是否保留对象并把权威交给当前会话房主。
+        /// 掉落物等为 true；玩家角色等为 false，随 Owner 离开销毁。
+        /// </summary>
+        public bool PersistOnOwnerLeave {
+            get => _persistOnOwnerLeave;
+            set => _persistOnOwnerLeave = value;
+        }
+
+        /// <summary>
         /// 入网快照附加数据。仅 Spawn 与晚加入调用；派生类型须成对读写相同字节数。
         /// </summary>
         protected virtual void OnSerializeSnapshot(ref BufferWriter writer) {
@@ -39,6 +49,12 @@ namespace Xoderony.Networking {
         internal void Bind(NetworkObjectManager objectManager, uint id, ulong ownerPeerId) {
             _objectManager = objectManager;
             Id = id;
+            OwnerPeerId = ownerPeerId;
+        }
+
+        internal void SetOwner(ulong ownerPeerId) {
+            Assert.IsTrue(IsSpawned, "Instance is not spawned.");
+            Assert.AreNotEqual(0ul, ownerPeerId, "Network object owner PeerId 0 is invalid.");
             OwnerPeerId = ownerPeerId;
         }
 

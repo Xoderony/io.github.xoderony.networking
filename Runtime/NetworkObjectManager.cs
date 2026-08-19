@@ -10,9 +10,10 @@ namespace Xoderony.Networking {
     /// <summary>
     /// 对等会话中的网络对象生命周期：本端派生 id 并广播生成/销毁，
     /// 成员经 Session 承认后补发本端对象快照，成员离开或会话停止时清理。
+    /// 会话房主切换时，将原房主的持久对象权威迁到新房主，不改 Id。
     /// </summary>
     public sealed class NetworkObjectManager : INetworkObjectManager, IDisposable {
-        /// <summary>Spawn 固定头：Id + PrefabId。</summary>
+        /// <summary>Spawn 固定头：Id + PrefabId + PersistOnOwnerLeave。</summary>
         private readonly INetworkTransport _transport;
         private readonly INetworkSession _session;
         private readonly INetworkMessageManager _messageManager;
@@ -27,6 +28,8 @@ namespace Xoderony.Networking {
 
         public event Action<NetworkObject> Despawned;
 
+        public event Action<NetworkObject> OwnerChanged;
+
         public NetworkObjectManager(INetworkTransport transport, INetworkSession session, INetworkMessageManager messageManager, INetworkObjectIdAllocator idAllocator, INetworkObjectFactory factory) {
             _transport = transport;
             _session = session;
@@ -37,6 +40,7 @@ namespace Xoderony.Networking {
             messageManager.RegisterHandler(NetworkMessageType.Despawn, OnDespawnMessage);
             session.MemberJoined += OnMemberJoined;
             session.MemberLeft += OnMemberLeft;
+            session.OwnerChanged += OnSessionOwnerChanged;
             session.Stopped += OnSessionStopped;
         }
 
@@ -76,10 +80,7 @@ namespace Xoderony.Networking {
 
             Span<byte> buffer = stackalloc byte[NetworkMessageLimits.MessageCapacity];
             var writer = new BufferWriter(buffer);
-            writer.WriteByte(NetworkMessageType.Spawn);
-            writer.WriteUInt(id);
-            writer.WriteInt(instance.PrefabId);
-            instance.SerializeSnapshot(ref writer);
+            WriteSpawn(ref writer, id, instance);
             _messageManager.SendToOthers(writer.Written, NetworkDelivery.Reliable);
 
             SpawnLocal(id, _transport.LocalPeerId, instance);
@@ -104,6 +105,7 @@ namespace Xoderony.Networking {
             _messageManager.UnregisterHandler(NetworkMessageType.Despawn, OnDespawnMessage);
             _session.MemberJoined -= OnMemberJoined;
             _session.MemberLeft -= OnMemberLeft;
+            _session.OwnerChanged -= OnSessionOwnerChanged;
             _session.Stopped -= OnSessionStopped;
         }
 
@@ -118,6 +120,19 @@ namespace Xoderony.Networking {
             }
         }
 
+        private void OnSessionOwnerChanged(ulong previousOwnerPeerId, ulong ownerPeerId) {
+            Assert.AreNotEqual(0ul, ownerPeerId, "Network session owner PeerId 0 is invalid.");
+
+            foreach (var pair in _objects) {
+                var networkObject = pair.Value;
+                if (!networkObject.PersistOnOwnerLeave || networkObject.OwnerPeerId != previousOwnerPeerId) {
+                    continue;
+                }
+
+                TransferOwner(networkObject, ownerPeerId);
+            }
+        }
+
         private void OnMemberJoined(ulong peerId) {
             Span<byte> buffer = stackalloc byte[NetworkMessageLimits.MessageCapacity];
             foreach (var pair in _objects) {
@@ -127,20 +142,29 @@ namespace Xoderony.Networking {
                 }
 
                 var writer = new BufferWriter(buffer);
-                writer.WriteByte(NetworkMessageType.Spawn);
-                writer.WriteUInt(networkObject.Id);
-                writer.WriteInt(networkObject.PrefabId);
-                networkObject.SerializeSnapshot(ref writer);
+                WriteSpawn(ref writer, networkObject.Id, networkObject);
                 _messageManager.SendToPeer(peerId, writer.Written, NetworkDelivery.Reliable);
             }
         }
 
         private void OnMemberLeft(ulong peerId) {
+            var sessionOwnerPeerId = _session.OwnerPeerId;
             var ids = new List<uint>();
             foreach (var pair in _objects) {
-                if (pair.Value.OwnerPeerId == peerId) {
-                    ids.Add(pair.Key);
+                var networkObject = pair.Value;
+                if (networkObject.OwnerPeerId != peerId) {
+                    continue;
                 }
+
+                if (networkObject.PersistOnOwnerLeave) {
+                    if (sessionOwnerPeerId != 0 && sessionOwnerPeerId != peerId) {
+                        TransferOwner(networkObject, sessionOwnerPeerId);
+                    }
+
+                    continue;
+                }
+
+                ids.Add(pair.Key);
             }
 
             foreach (var id in ids) {
@@ -151,10 +175,12 @@ namespace Xoderony.Networking {
         private void OnSpawnMessage(ulong senderPeerId, BufferReader reader) {
             var id = reader.ReadUInt();
             var prefabId = reader.ReadInt();
+            var persistOnOwnerLeave = reader.ReadBool();
 
             if (_objects.TryGetValue(id, out var existing)) {
                 Assert.AreEqual(senderPeerId, existing.OwnerPeerId, "Network object id collision between different owners.");
                 Assert.AreEqual(prefabId, existing.PrefabId, "Spawn snapshot prefab does not match the existing object.");
+                existing.PersistOnOwnerLeave = persistOnOwnerLeave;
                 existing.DeserializeSnapshot(ref reader);
                 return;
             }
@@ -163,6 +189,7 @@ namespace Xoderony.Networking {
             Assert.IsNotNull(prefab, $"Prefab id {prefabId} is not registered.");
 
             var instance = _factory.Instantiate(prefab);
+            instance.PersistOnOwnerLeave = persistOnOwnerLeave;
             instance.DeserializeSnapshot(ref reader);
             SpawnLocal(id, senderPeerId, instance);
         }
@@ -175,6 +202,23 @@ namespace Xoderony.Networking {
 
             Assert.AreEqual(senderPeerId, networkObject.OwnerPeerId, "Only the current owner can despawn a network object.");
             DestroyLocal(id);
+        }
+
+        private void WriteSpawn(ref BufferWriter writer, uint id, NetworkObject networkObject) {
+            writer.WriteByte(NetworkMessageType.Spawn);
+            writer.WriteUInt(id);
+            writer.WriteInt(networkObject.PrefabId);
+            writer.WriteBool(networkObject.PersistOnOwnerLeave);
+            networkObject.SerializeSnapshot(ref writer);
+        }
+
+        private void TransferOwner(NetworkObject networkObject, ulong ownerPeerId) {
+            if (networkObject.OwnerPeerId == ownerPeerId) {
+                return;
+            }
+
+            networkObject.SetOwner(ownerPeerId);
+            OwnerChanged?.Invoke(networkObject);
         }
 
         private void SpawnLocal(uint id, ulong ownerPeerId, NetworkObject instance) {

@@ -9,6 +9,9 @@ namespace Xoderony.Networking {
         /// <summary>网络对象已从表移除、尚未解除网络身份时触发。</summary>
         event Action<NetworkObject> Despawned;
 
+        /// <summary>网络对象权威已变更时触发；此时 <see cref="NetworkObject.OwnerPeerId"/> 已是新权威。</summary>
+        event Action<NetworkObject> OwnerChanged;
+
         /// <summary>注册可用于网络生成的 Prefab。</summary>
         void RegisterPrefab(NetworkObject prefab);
 
