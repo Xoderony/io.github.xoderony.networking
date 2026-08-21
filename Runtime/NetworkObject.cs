@@ -8,7 +8,6 @@ namespace Xoderony.Networking {
     /// </summary>
     [DisallowMultipleComponent]
     public class NetworkObject : MonoBehaviour {
-        private NetworkObjectManager _objectManager;
         private uint _id;
         private ulong _ownerPeerId;
 
@@ -18,9 +17,7 @@ namespace Xoderony.Networking {
 
         public ulong OwnerPeerId => _ownerPeerId;
 
-        public bool IsSpawned => _objectManager != null;
-
-        public bool IsOwner => _objectManager != null && _ownerPeerId == _objectManager.LocalPeerId;
+        public bool IsSpawned => _id != 0;
 
         public int PrefabId {
             get => _prefabId;
@@ -42,7 +39,7 @@ namespace Xoderony.Networking {
         /// <summary>
         /// Owner 发生变化时调用，包括首次分配和解除 Owner。所有端都会调用。
         /// </summary>
-        protected virtual void OnOwnerChanged(ulong previousOwnerPeerId, ulong ownerPeerId) {
+        protected virtual void OnOwnerChanged(ulong previousOwnerPeerId, ulong newOwnerPeerId) {
         }
 
         /// <summary>
@@ -55,45 +52,41 @@ namespace Xoderony.Networking {
         protected virtual void OnDeserializeSnapshot(ref BufferReader reader) {
         }
 
-        internal void Bind(NetworkObjectManager objectManager, uint id, ulong ownerPeerId) {
-            Assert.IsNull(_objectManager, "Network object is already bound.");
-            Assert.IsNotNull(objectManager, "Network object manager is null.");
+        internal void Bind(uint id, ulong ownerPeerId) {
+            Assert.AreEqual(0u, _id, "Network object is already bound.");
             Assert.AreNotEqual(0u, id, "Network object id 0 is reserved.");
             Assert.AreNotEqual(0ul, ownerPeerId, "Network object owner PeerId 0 is invalid.");
 
-            _objectManager = objectManager;
             _id = id;
-
             SetOwner(ownerPeerId);
         }
 
-        internal void SetOwner(ulong ownerPeerId) {
-            Assert.IsNotNull(_objectManager, "Network object is not bound.");
+        internal void SetOwner(ulong newOwnerPeerId) {
+            Assert.AreNotEqual(0u, _id, "Network object is not bound.");
 
-            if (_ownerPeerId == ownerPeerId) {
+            if (_ownerPeerId == newOwnerPeerId) {
                 return;
             }
 
             var previousOwnerPeerId = _ownerPeerId;
-            _ownerPeerId = ownerPeerId;
+            _ownerPeerId = newOwnerPeerId;
 
             if (previousOwnerPeerId != 0) {
                 OnOwnerUnassigned(previousOwnerPeerId);
             }
 
-            if (ownerPeerId != 0) {
-                OnOwnerAssigned(ownerPeerId);
+            if (newOwnerPeerId != 0) {
+                OnOwnerAssigned(newOwnerPeerId);
             }
 
-            OnOwnerChanged(previousOwnerPeerId, ownerPeerId);
+            OnOwnerChanged(previousOwnerPeerId, newOwnerPeerId);
         }
 
         internal void Unbind() {
-            Assert.IsNotNull(_objectManager, "Network object is not bound.");
+            Assert.AreNotEqual(0u, _id, "Network object is not bound.");
 
             SetOwner(0);
 
-            _objectManager = null;
             _id = default;
         }
 

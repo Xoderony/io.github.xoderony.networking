@@ -30,7 +30,7 @@ INetworkSession session = CreateSession();
 var messageManager = new NetworkMessageManager(transport);
 INetworkObjectIdAllocator idAllocator = CreateObjectIdAllocator();
 var objectFactory = new InstantiateNetworkObjectFactory();
-var objectManager = new NetworkObjectManager(transport, session, messageManager, idAllocator, objectFactory);
+var objectManager = new NetworkObjectManager(session, messageManager, idAllocator, objectFactory);
 
 objectManager.RegisterPrefab(prefab);
 transport.Start();
@@ -71,7 +71,7 @@ public sealed class ProjectNetworkObject : NetworkObject
 }
 ```
 
-`INetworkObjectManager` exposes `Spawned`, `Despawned` and `OwnerChanged` events with the object, and resolves spawned objects by id. `NetworkObject.OwnerPeerId` identifies the current authority independently from identity. `NetworkObject.PersistOnOwnerLeave` is false for player characters (destroyed when the owner leaves) and true for dropped items (authority moves to the current session owner). Local ids come from the injected `INetworkObjectIdAllocator`; the project lifecycle guarantees that `Allocate` is called only after local allocation is initialized. `Spawned` runs after the object is bound and initialized; `Despawned` runs after removal from the table and before unbind, immediately before factory destruction; `OwnerChanged` runs after `OwnerPeerId` is updated. `NetworkObjectManager` uses session `MemberJoined` for snapshot delivery to newly connected peers. `MemberLeft` destroys non-persistent objects of the leaving peer and transfers persistent ones to the current session owner when that owner is already someone else. Session `OwnerChanged` locally moves remaining persistent objects of the previous owner to the new owner without changing ids or sending a protocol message. The persist flag is part of the Spawn header.
+`INetworkObjectManager` exposes `Spawned`, `Despawned` and `OwnerChanged` events with the object, and resolves spawned objects by id. `NetworkObject.OwnerPeerId` identifies the current authority independently from identity; whether this peer is the authority is decided by comparing `OwnerPeerId` with `INetworkSession.LocalPeerId`. `NetworkObject.PersistOnOwnerLeave` is false for player characters (destroyed when the owner leaves) and true for dropped items (authority moves to the current session owner). Local ids come from the injected `INetworkObjectIdAllocator`; the project lifecycle guarantees that `Allocate` is called only after local allocation is initialized. `Spawned` runs after the object is bound and initialized; `Despawned` runs after removal from the table and before unbind, immediately before factory destruction; `OwnerChanged` runs after `OwnerPeerId` is updated. `NetworkObjectManager` uses session `MemberJoined` for snapshot delivery to newly connected peers. `MemberLeft` destroys non-persistent objects of the leaving peer and transfers persistent ones to the current session owner when that owner is already someone else; if the departed peer is still the session owner, transfer waits for session `OwnerChanged`. Session `OwnerChanged` locally moves remaining objects of the previous owner to the new owner without changing ids or sending a protocol message. The persist flag is part of the Spawn header.
 
 Local `Spawn` asks `INetworkObjectFactory` to create the registered prefab, invokes the caller's initializer, sends the initial snapshot, binds the network identity, and then publishes `Spawned`. Remote spawn applies the snapshot before bind.
 

@@ -9,19 +9,17 @@ using Xoderony.Networking.Transport;
 namespace Xoderony.Networking {
     /// <summary>
     /// 对等会话中的网络对象生命周期：本端派生 id 并广播生成/销毁，
-    /// 成员经 Session 承认后补发本端对象快照，成员离开时将其对象权威迁移给当前会话 Owner，
+    /// 成员经 Session 承认后补发本端对象快照，
+    /// 成员离开或会话房主变更时将相关对象权威迁移给当前会话 Owner，
     /// 会话停止时清理全部对象。
     /// </summary>
     public sealed class NetworkObjectManager : INetworkObjectManager, IDisposable {
-        private readonly INetworkTransport _transport;
         private readonly INetworkSession _session;
         private readonly INetworkMessageManager _messageManager;
         private readonly INetworkObjectIdAllocator _idAllocator;
         private readonly INetworkObjectFactory _factory;
         private readonly Dictionary<int, NetworkObject> _prefabs = new Dictionary<int, NetworkObject>();
         private readonly Dictionary<uint, NetworkObject> _objects = new Dictionary<uint, NetworkObject>();
-
-        internal ulong LocalPeerId => _transport.LocalPeerId;
 
         public event Action<NetworkObject> Spawned;
 
@@ -30,13 +28,11 @@ namespace Xoderony.Networking {
         public event Action<NetworkObject, ulong, ulong> OwnerChanged;
 
         public NetworkObjectManager(
-            INetworkTransport transport,
             INetworkSession session,
             INetworkMessageManager messageManager,
             INetworkObjectIdAllocator idAllocator,
             INetworkObjectFactory factory) {
 
-            _transport = transport;
             _session = session;
             _messageManager = messageManager;
             _idAllocator = idAllocator;
@@ -47,6 +43,7 @@ namespace Xoderony.Networking {
 
             session.MemberJoined += OnMemberJoined;
             session.MemberLeft += OnMemberLeft;
+            session.OwnerChanged += OnSessionOwnerChanged;
             session.Stopped += OnSessionStopped;
         }
 
@@ -84,6 +81,7 @@ namespace Xoderony.Networking {
             initialize?.Invoke(instance);
 
             var id = _idAllocator.Allocate();
+            var localPeerId = _session.LocalPeerId;
 
             Span<byte> buffer = stackalloc byte[NetworkMessageLimits.MessageCapacity];
             var writer = new BufferWriter(buffer);
@@ -93,13 +91,13 @@ namespace Xoderony.Networking {
             instance.SerializeSnapshot(ref writer);
             _messageManager.SendToOthers(writer.Written, NetworkDelivery.Reliable);
 
-            SpawnLocal(id, _transport.LocalPeerId, instance);
+            SpawnLocal(id, localPeerId, instance);
             return instance;
         }
 
         /// <summary>销毁本端拥有的对象并广播 Despawn。仅拥有者可调用。</summary>
         public void Despawn(NetworkObject networkObject) {
-            Assert.IsTrue(networkObject.IsOwner, "Only the owner can despawn a network object.");
+            Assert.AreEqual(_session.LocalPeerId, networkObject.OwnerPeerId, "Only the owner can despawn a network object.");
 
             Span<byte> buffer = stackalloc byte[NetworkMessageLimits.MessageCapacity];
             var writer = new BufferWriter(buffer);
@@ -116,6 +114,7 @@ namespace Xoderony.Networking {
 
             _session.MemberJoined -= OnMemberJoined;
             _session.MemberLeft -= OnMemberLeft;
+            _session.OwnerChanged -= OnSessionOwnerChanged;
             _session.Stopped -= OnSessionStopped;
         }
 
@@ -131,11 +130,12 @@ namespace Xoderony.Networking {
         }
 
         private void OnMemberJoined(ulong peerId) {
+            var localPeerId = _session.LocalPeerId;
             Span<byte> buffer = stackalloc byte[NetworkMessageLimits.MessageCapacity];
 
             foreach (var pair in _objects) {
                 var networkObject = pair.Value;
-                if (networkObject.OwnerPeerId != _transport.LocalPeerId) {
+                if (networkObject.OwnerPeerId != localPeerId) {
                     continue;
                 }
 
@@ -149,19 +149,34 @@ namespace Xoderony.Networking {
         }
 
         private void OnMemberLeft(ulong peerId) {
-            var ownerPeerId = _session.OwnerPeerId;
+            var sessionOwnerPeerId = _session.OwnerPeerId;
+            Assert.AreNotEqual(0ul, sessionOwnerPeerId, "Network session owner PeerId 0 is invalid.");
 
-            Assert.AreNotEqual(0ul, ownerPeerId, "Network session owner PeerId 0 is invalid.");
-            Assert.AreNotEqual(peerId, ownerPeerId, "Departed member is still the network session owner.");
+            // 房主离开时 Lobby 的 MemberLeave 与 Owner 更新顺序不确定；仍是会话房主则等 OwnerChanged。
+            if (peerId == sessionOwnerPeerId) {
+                return;
+            }
 
+            TransferOwnership(peerId, sessionOwnerPeerId);
+        }
+
+        private void OnSessionOwnerChanged(ulong previousOwnerPeerId, ulong newOwnerPeerId) {
+            Assert.AreNotEqual(0ul, previousOwnerPeerId, "Previous network session owner PeerId 0 is invalid.");
+            Assert.AreNotEqual(0ul, newOwnerPeerId, "Network session owner PeerId 0 is invalid.");
+            Assert.AreNotEqual(previousOwnerPeerId, newOwnerPeerId, "Network session owner did not change.");
+
+            TransferOwnership(previousOwnerPeerId, newOwnerPeerId);
+        }
+
+        private void TransferOwnership(ulong previousOwnerPeerId, ulong newOwnerPeerId) {
             foreach (var pair in _objects) {
                 var networkObject = pair.Value;
-                if (networkObject.OwnerPeerId != peerId) {
+                if (networkObject.OwnerPeerId != previousOwnerPeerId) {
                     continue;
                 }
 
-                networkObject.SetOwner(ownerPeerId);
-                OwnerChanged?.Invoke(networkObject, peerId, ownerPeerId);
+                networkObject.SetOwner(newOwnerPeerId);
+                OwnerChanged?.Invoke(networkObject, previousOwnerPeerId, newOwnerPeerId);
             }
         }
 
@@ -200,7 +215,7 @@ namespace Xoderony.Networking {
             Assert.AreNotEqual(0ul, ownerPeerId, "Network object owner PeerId 0 is invalid.");
             Assert.IsFalse(_objects.ContainsKey(id), "Network object id is already in use.");
 
-            instance.Bind(this, id, ownerPeerId);
+            instance.Bind(id, ownerPeerId);
             _objects[id] = instance;
             Spawned?.Invoke(instance);
         }

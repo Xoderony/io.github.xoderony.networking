@@ -6,6 +6,9 @@ namespace Xoderony.Networking {
         /// <summary>本端是否处于活动会话中。</summary>
         bool IsStarted { get; }
 
+        /// <summary>本端对等端 id；传输未就绪时为 0。</summary>
+        ulong LocalPeerId { get; }
+
         /// <summary>当前会话所有者的对等端 id；无活动会话时为 0。</summary>
         ulong OwnerPeerId { get; }
 
@@ -24,7 +27,7 @@ namespace Xoderony.Networking {
         /// <summary>远端成员离开当前会话或失去通信连接时触发。</summary>
         event Action<ulong> MemberLeft;
 
-        /// <summary>会话所有者变化时触发，参数依次为旧所有者和新所有者的对等端 id。</summary>
+        /// <summary>会话所有者变化时触发，参数依次为 previousOwnerPeerId 与 newOwnerPeerId。</summary>
         event Action<ulong, ulong> OwnerChanged;
     }
 }
